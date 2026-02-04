@@ -289,42 +289,72 @@ export function OutlinePage() {
 
   // 解析大纲内容，自动创建章节
   const parseAndCreateChapters = async (outlineText: string): Promise<number> => {
-    // 匹配章节模式: 第X章、Chapter X、章节X 等
+    // 匹配章节模式: ### 第X章、### Chapter X 等（必须以 ### 开头的标题行）
+    // 这样可以避免匹配到正文中的"第X章事件"等描述
     const chapterPatterns = [
-      /第(\d+)章[：:]\s*(.+?)(?:\n|$)/g,
-      /第(\d+)章\s+(.+?)(?:\n|$)/g,
-      /Chapter\s+(\d+)[：:]\s*(.+?)(?:\n|$)/gi,
-      /(\d+)[.、]\s*(.+?)(?:\n|$)/g,
+      /^###\s*第(\d+)章[：:]\s*(.+?)$/gm,   // ### 第X章：标题
+      /^###\s*第(\d+)章\s+(.+?)$/gm,        // ### 第X章 标题
+      /^###\s*Chapter\s+(\d+)[：:]\s*(.+?)$/gim, // ### Chapter X: Title
+      /^第(\d+)章[：:]\s*(.+?)$/gm,          // 第X章：标题（无###但在行首）
     ];
 
-    const chapters: Array<{ order: number; title: string; goal: string }> = [];
+    const chapters: Array<{ order: number; title: string; goal: string; conflict: string }> = [];
     
     for (const pattern of chapterPatterns) {
-      let match;
       const lines = outlineText.split('\n');
       
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const resetPattern = new RegExp(pattern.source, pattern.flags);
-        match = resetPattern.exec(line);
+        const match = resetPattern.exec(line);
         
         if (match) {
           const order = parseInt(match[1]);
           const title = match[2].trim();
           
-          // 获取该章节后面的描述作为目标
+          // 获取该章节后面的描述（目标、冲突、时间、结尾钩子等）
+          let time = '';
           let goal = '';
-          for (let j = i + 1; j < lines.length && j < i + 5; j++) {
+          let conflict = '';
+          let hook = '';
+          
+          for (let j = i + 1; j < lines.length && j < i + 15; j++) {
             const nextLine = lines[j].trim();
-            if (nextLine && !nextLine.match(/第\d+章|Chapter\s+\d+/i)) {
-              goal += nextLine + '\n';
-            } else if (nextLine.match(/第\d+章|Chapter\s+\d+/i)) {
+            // 遇到下一个章节标题时停止
+            if (nextLine.match(/^###?\s*第\d+章|^###?\s*Chapter\s+\d+/i)) {
               break;
+            }
+            // 提取时间
+            const timeMatch = nextLine.match(/^[*-]?\s*\*?\*?时间\*?\*?[：:]\s*(.+)/);
+            if (timeMatch) {
+              time = timeMatch[1].trim();
+            }
+            // 提取目标
+            const goalMatch = nextLine.match(/^[*-]?\s*\*?\*?目标\*?\*?[：:]\s*(.+)/);
+            if (goalMatch) {
+              goal = goalMatch[1].trim();
+            }
+            // 提取冲突
+            const conflictMatch = nextLine.match(/^[*-]?\s*\*?\*?冲突\*?\*?[：:]\s*(.+)/);
+            if (conflictMatch) {
+              conflict = conflictMatch[1].trim();
+            }
+            // 提取结尾钩子
+            const hookMatch = nextLine.match(/^[*-]?\s*\*?\*?结尾钩子\*?\*?[：:]\s*(.+)/);
+            if (hookMatch) {
+              hook = hookMatch[1].trim();
             }
           }
           
+          // 将时间和结尾钩子信息合并到goal中，提供更完整的章节指导
+          const fullGoal = [
+            time ? `时间：${time}` : '',
+            goal ? `目标：${goal}` : '',
+            hook ? `结尾钩子：${hook}` : '',
+          ].filter(Boolean).join('\n');
+          
           if (!chapters.find(c => c.order === order)) {
-            chapters.push({ order, title, goal: goal.trim() });
+            chapters.push({ order, title, goal: fullGoal || goal, conflict: conflict });
           }
         }
       }
@@ -342,6 +372,7 @@ export function OutlinePage() {
             title: chapter.title,
             order_index: chapter.order,
             outline_goal: chapter.goal || undefined,
+            conflict: chapter.conflict || undefined,
           }
         });
         created++;
