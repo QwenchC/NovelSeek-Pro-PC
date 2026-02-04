@@ -50,7 +50,92 @@ pub async fn generate_outline_stream(
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
     let client = Client::new();
+    let target_chapters = input.target_chapters;
     
+    let initial_prompt = build_outline_prompt(&input);
+    let system_prompt = build_outline_system_prompt(target_chapters);
+
+    // 第一次生成
+    let mut full_content = stream_generate(
+        &client, 
+        &window, 
+        &input.deepseek_key, 
+        &system_prompt, 
+        &initial_prompt,
+        "outline-stream",
+        8000  // 增加 token 限制
+    ).await?;
+
+    // 检测是否需要续写（最多续写5次）
+    let max_continuations = 5;
+    for i in 0..max_continuations {
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            return Err("生成已被用户中断".to_string());
+        }
+
+        // 检查是否已生成所有章节
+        let last_chapter_found = find_last_chapter_number(&full_content);
+        
+        if last_chapter_found >= target_chapters {
+            // 已完成所有章节
+            break;
+        }
+
+        // 通知前端正在续写
+        let _ = window.emit("outline-stream", format!("\n\n【系统：检测到大纲未完成（已生成到第{}章，目标{}章），正在自动续写...】\n\n", last_chapter_found, target_chapters));
+
+        // 构建续写提示
+        let continue_prompt = format!(
+            r#"请继续完成大纲的章节部分。
+
+【已生成内容的结尾】
+{}
+
+【续写要求】
+1. 从第{}章继续生成，直到第{}章
+2. 保持与前面相同的格式
+3. 每章格式：
+### 第X章：章节标题
+- **时间**：本章发生的时间点
+- **目标**：本章要完成的剧情目标
+- **冲突**：本章的核心冲突或挑战
+- **结尾钩子**：吸引读者继续阅读的悬念
+
+请直接从第{}章开始续写，不要重复已有内容："#,
+            get_last_n_chars(&full_content, 1500),
+            last_chapter_found + 1,
+            target_chapters,
+            last_chapter_found + 1
+        );
+
+        let continue_system = format!(
+            r#"你正在续写一份小说大纲。前面的内容已经生成了第1章到第{}章，现在需要继续生成剩余的章节（第{}章到第{}章）。
+
+请保持格式一致，直接续写章节内容，不要添加任何开头说明。"#,
+            last_chapter_found,
+            last_chapter_found + 1,
+            target_chapters
+        );
+
+        // 续写生成
+        let continuation = stream_generate(
+            &client,
+            &window,
+            &input.deepseek_key,
+            &continue_system,
+            &continue_prompt,
+            "outline-stream",
+            6000
+        ).await?;
+
+        full_content.push_str(&continuation);
+    }
+
+    Ok(full_content)
+}
+
+// 构建大纲生成的初始提示词
+fn build_outline_prompt(input: &GenerateOutlineStreamInput) -> String {
     let mut prompt = format!(
         r#"请为以下小说创建详细大纲：
 
@@ -143,7 +228,12 @@ pub async fn generate_outline_stream(
 5. 角色和势力格式便于系统解析
 "#, input.target_chapters, input.target_chapters, input.target_chapters, input.target_chapters));
 
-    let system_prompt = format!(r#"你是一位专业的小说策划师和编剧。你的任务是根据用户提供的题材、风格和要求，创建详细的小说大纲。
+    prompt
+}
+
+// 构建大纲生成的系统提示词
+fn build_outline_system_prompt(target_chapters: u32) -> String {
+    format!(r#"你是一位专业的小说策划师和编剧。你的任务是根据用户提供的题材、风格和要求，创建详细的小说大纲。
 
 【核心要求】
 1. 章节数量必须严格等于用户指定的{}章，不能多也不能少
@@ -163,22 +253,69 @@ pub async fn generate_outline_stream(
 - 使用 ## 作为一级标题（故事梗概、世界观设定、时间线事件、主要角色、章节大纲等）
 - 使用 ### 作为二级标题（角色名、章节标题、势力名等）
 - 使用 - **字段**：内容 格式列出详细信息
-- 确保格式统一，便于程序解析"#, input.target_chapters);
+- 确保格式统一，便于程序解析"#, target_chapters)
+}
 
+// 查找已生成的最后一章编号
+fn find_last_chapter_number(content: &str) -> u32 {
+    use regex::Regex;
+    
+    // 匹配 "第X章" 或 "### 第X章"
+    let re = Regex::new(r"第(\d+)章").unwrap();
+    let mut max_chapter = 0u32;
+    
+    for cap in re.captures_iter(content) {
+        if let Some(num_str) = cap.get(1) {
+            if let Ok(num) = num_str.as_str().parse::<u32>() {
+                if num > max_chapter {
+                    max_chapter = num;
+                }
+            }
+        }
+    }
+    
+    max_chapter
+}
+
+// 获取字符串最后N个字符
+fn get_last_n_chars(s: &str, n: usize) -> &str {
+    let len = s.len();
+    if len <= n {
+        s
+    } else {
+        // 找到合适的 UTF-8 边界
+        let mut start = len - n;
+        while start > 0 && !s.is_char_boundary(start) {
+            start -= 1;
+        }
+        &s[start..]
+    }
+}
+
+// 通用流式生成函数
+async fn stream_generate(
+    client: &Client,
+    window: &Window,
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    event_name: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
     let request_body = serde_json::json!({
         "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.8,
-        "max_tokens": 4000,
+        "max_tokens": max_tokens,
         "stream": true
     });
 
     let response = client
         .post("https://api.deepseek.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", input.deepseek_key))
+        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -194,7 +331,6 @@ pub async fn generate_outline_stream(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk_result) = stream.next().await {
-        // 检查是否被取消
         if CANCEL_FLAG.load(Ordering::SeqCst) {
             return Err("生成已被用户中断".to_string());
         }
@@ -202,7 +338,6 @@ pub async fn generate_outline_stream(
         let chunk = chunk_result.map_err(|e| format!("读取流失败: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
 
-        // 处理SSE格式的数据
         for line in chunk_str.lines() {
             if line.starts_with("data: ") {
                 let data = &line[6..];
@@ -214,8 +349,7 @@ pub async fn generate_outline_stream(
                     if let Some(choice) = stream_response.choices.first() {
                         if let Some(content) = &choice.delta.content {
                             full_content.push_str(content);
-                            // 发送流式事件到前端
-                            let _ = window.emit("outline-stream", content.clone());
+                            let _ = window.emit(event_name, content.clone());
                         }
                     }
                 }
