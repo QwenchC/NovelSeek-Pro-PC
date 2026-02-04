@@ -28,7 +28,7 @@ function stripMarkdown(text: string): string {
 export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
-  const { deepseekKey, getCharacters } = useAppStore();
+  const { deepseekKey, getCharacters, getWorldSetting, getTimeline } = useAppStore();
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [allChapters, setAllChapters] = useState<Chapter[]>([]);
@@ -149,6 +149,10 @@ export function EditorPage() {
           }).join('\n')
         : null;
 
+      // 获取世界观设定和时间线，防止章节之间冲突
+      const worldSetting = projectId ? getWorldSetting(projectId) : '';
+      const timeline = projectId ? getTimeline(projectId) : '';
+
       await invoke<string>('generate_chapter_stream', {
         chapterTitle: chapter.title,
         outlineGoal: chapter.outline_goal || '推进剧情发展',
@@ -156,6 +160,8 @@ export function EditorPage() {
         previousSummary: previousSummary,
         currentContent: currentTail,
         charactersInfo: charactersInfo,
+        worldSetting: worldSetting || null,
+        timeline: timeline || null,
         targetWords: TARGET_WORDS_PER_GENERATION,
         isContinuation: mode === 'continue',
         deepseekKey: deepseekKey,

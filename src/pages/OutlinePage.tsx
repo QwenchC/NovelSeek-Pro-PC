@@ -12,7 +12,11 @@ import remarkGfm from 'remark-gfm';
 export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentProject, setCurrentProject, deepseekKey, getCharacters, setCharacters } = useAppStore();
+  const { 
+    currentProject, setCurrentProject, deepseekKey, 
+    getCharacters, setCharacters,
+    setWorldSetting, setTimeline 
+  } = useAppStore();
   
   const [outline, setOutline] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -158,6 +162,20 @@ export function OutlinePage() {
         } else {
           console.log('OutlinePage handleSave: 未解析到角色，检查大纲格式');
         }
+        
+        // 解析并保存世界观设定
+        const worldSetting = parseWorldSettingFromOutline(outline);
+        if (worldSetting) {
+          setWorldSetting(id, worldSetting);
+          console.log('OutlinePage handleSave: 已保存世界观设定');
+        }
+        
+        // 解析并保存时间线事件
+        const timeline = parseTimelineFromOutline(outline);
+        if (timeline) {
+          setTimeline(id, timeline);
+          console.log('OutlinePage handleSave: 已保存时间线事件');
+        }
       }
       
       setIsSaved(true);
@@ -245,6 +263,28 @@ export function OutlinePage() {
 
     console.log('总共解析角色数:', parsed.length);
     return parsed;
+  };
+
+  // 从大纲解析世界观设定
+  const parseWorldSettingFromOutline = (outlineText: string): string => {
+    // 匹配 "## 世界观设定" 部分
+    const worldSection = outlineText.match(/##\s*世界观设定[\s\S]*?(?=\n##\s|$)/i);
+    if (!worldSection) {
+      console.log('未找到世界观设定部分');
+      return '';
+    }
+    return worldSection[0].trim();
+  };
+
+  // 从大纲解析时间线事件
+  const parseTimelineFromOutline = (outlineText: string): string => {
+    // 匹配 "## 时间线事件" 部分
+    const timelineSection = outlineText.match(/##\s*时间线事件[\s\S]*?(?=\n##\s|$)/i);
+    if (!timelineSection) {
+      console.log('未找到时间线事件部分');
+      return '';
+    }
+    return timelineSection[0].trim();
   };
 
   // 解析大纲内容，自动创建章节

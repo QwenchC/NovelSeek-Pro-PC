@@ -31,6 +31,16 @@ interface AppState {
   setCharacters: (projectId: string, characters: Character[]) => void;
   getCharacters: (projectId: string) => Character[];
 
+  // 世界观设定 (按项目ID存储)
+  worldSettingByProject: Record<string, string>;
+  setWorldSetting: (projectId: string, worldSetting: string) => void;
+  getWorldSetting: (projectId: string) => string;
+
+  // 时间线事件 (按项目ID存储)
+  timelineByProject: Record<string, string>;
+  setTimeline: (projectId: string, timeline: string) => void;
+  getTimeline: (projectId: string) => string;
+
   // API Keys (persisted to localStorage)
   deepseekKey: string;
   pollinationsKey: string;
@@ -75,6 +85,26 @@ export const useAppStore = create<AppState>()(
       })),
       getCharacters: (projectId) => get().charactersByProject[projectId] || [],
 
+      // World Setting
+      worldSettingByProject: {},
+      setWorldSetting: (projectId, worldSetting) => set((state) => ({
+        worldSettingByProject: {
+          ...state.worldSettingByProject,
+          [projectId]: worldSetting,
+        },
+      })),
+      getWorldSetting: (projectId) => get().worldSettingByProject[projectId] || '',
+
+      // Timeline
+      timelineByProject: {},
+      setTimeline: (projectId, timeline) => set((state) => ({
+        timelineByProject: {
+          ...state.timelineByProject,
+          [projectId]: timeline,
+        },
+      })),
+      getTimeline: (projectId) => get().timelineByProject[projectId] || '',
+
       // API Keys
       deepseekKey: '',
       pollinationsKey: '',
@@ -95,11 +125,13 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'novelseek-storage',
-      // 持久化 API Keys 和角色数据
+      // 持久化 API Keys、角色、世界观和时间线数据
       partialize: (state) => ({
         deepseekKey: state.deepseekKey,
         pollinationsKey: state.pollinationsKey,
         charactersByProject: state.charactersByProject,
+        worldSettingByProject: state.worldSettingByProject,
+        timelineByProject: state.timelineByProject,
       }),
     }
   )
