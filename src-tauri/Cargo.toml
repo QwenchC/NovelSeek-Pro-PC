@@ -31,6 +31,7 @@ urlencoding = "2.1"
 lazy_static = "1.4"
 futures-util = "0.3"
 regex = "1.10"
+base64 = "0.21"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

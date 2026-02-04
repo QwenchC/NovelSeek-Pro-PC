@@ -3,13 +3,20 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { chapterApi } from '@services/api';
 import { Button } from '@components/Button';
-import { ArrowLeft, Save, Sparkles, StopCircle, Check, FileText, ChevronRight, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Save, Sparkles, StopCircle, Check, FileText, ChevronRight, RefreshCw, Image, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import type { Chapter } from '@typings/index';
 
 // 单次生成的目标字数（控制在2500字左右避免中断）
 const TARGET_WORDS_PER_GENERATION = 2500;
+
+// 推文生成结果类型
+interface PromoResult {
+  imagePrompt: string;
+  summary: string;
+  imageBase64: string | null;
+}
 
 // 去除 Markdown 符号
 function stripMarkdown(text: string): string {
@@ -28,7 +35,7 @@ function stripMarkdown(text: string): string {
 export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
-  const { deepseekKey, getCharacters, getWorldSetting, getTimeline } = useAppStore();
+  const { deepseekKey, pollinationsKey, getCharacters, getWorldSetting, getTimeline, getPromo, setPromo } = useAppStore();
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [allChapters, setAllChapters] = useState<Chapter[]>([]);
@@ -39,6 +46,12 @@ export function EditorPage() {
   const [error, setError] = useState<string | null>(null);
   const [wordCount, setWordCount] = useState(0);
   
+  // 推文相关状态
+  const [promoResult, setPromoResult] = useState<PromoResult | null>(null);
+  const [isPromoExpanded, setIsPromoExpanded] = useState(false);
+  const [isGeneratingPromo, setIsGeneratingPromo] = useState(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -46,6 +59,16 @@ export function EditorPage() {
       loadChapterData();
     }
   }, [chapterId, projectId]);
+
+  // 加载已保存的推文数据
+  useEffect(() => {
+    if (chapterId) {
+      const savedPromo = getPromo(chapterId);
+      if (savedPromo) {
+        setPromoResult(savedPromo);
+      }
+    }
+  }, [chapterId, getPromo]);
 
   useEffect(() => {
     // 计算字数（排除空格）
@@ -188,6 +211,58 @@ export function EditorPage() {
     setIsGenerating(false);
   };
 
+  // 生成章节推文（封面+摘要）
+  const handleGeneratePromo = async () => {
+    if (!content || content.trim().length < 100) {
+      setPromoError('章节内容太少，请先生成或编写更多内容（至少100字）');
+      return;
+    }
+
+    if (!deepseekKey) {
+      setPromoError('请先在设置中配置DeepSeek API Key');
+      return;
+    }
+
+    setIsGeneratingPromo(true);
+    setPromoError(null);
+
+    try {
+      // 第一步：生成摘要和图片提示词
+      const promoData = await invoke<{ image_prompt: string; summary: string }>('generate_chapter_promo', {
+        chapterTitle: chapter?.title || '未命名章节',
+        chapterContent: content,
+        deepseekKey: deepseekKey,
+      });
+
+      // 第二步：生成图片（3:1比例，1200x400）
+      const imageBase64 = await invoke<string>('generate_promo_image', {
+        prompt: promoData.image_prompt,
+        width: 1200,
+        height: 400,
+        pollinationsKey: pollinationsKey || null,
+      });
+
+      const newPromoResult = {
+        imagePrompt: promoData.image_prompt,
+        summary: promoData.summary,
+        imageBase64: imageBase64,
+      };
+      
+      setPromoResult(newPromoResult);
+      setIsPromoExpanded(true); // 生成成功后自动展开
+      
+      // 保存到store（持久化）
+      if (chapterId) {
+        setPromo(chapterId, newPromoResult);
+      }
+    } catch (err) {
+      const errorMessage = typeof err === 'string' ? err : (err as Error)?.message || '推文生成失败';
+      setPromoError(errorMessage);
+    } finally {
+      setIsGeneratingPromo(false);
+    }
+  };
+
   // 快捷键支持
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -259,6 +334,21 @@ export function EditorPage() {
                     生成
                   </Button>
                 )}
+                {/* 生成推文按钮 */}
+                <Button 
+                  variant="outline" 
+                  onClick={handleGeneratePromo} 
+                  disabled={isGeneratingPromo || !content || content.trim().length < 100}
+                  className="whitespace-nowrap"
+                  title={!content || content.trim().length < 100 ? '需要至少100字内容' : '生成章节封面和摘要'}
+                >
+                  {isGeneratingPromo ? (
+                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                  ) : (
+                    <Image className="w-4 h-4 mr-1" />
+                  )}
+                  推文
+                </Button>
               </>
             )}
             <Button onClick={handleSave} loading={isSaving} disabled={isSaved} className="whitespace-nowrap">
@@ -268,6 +358,92 @@ export function EditorPage() {
           </div>
         </div>
       </div>
+
+      {/* 推文展示区域（封面+摘要） */}
+      {(promoResult || promoError) && (
+        <div className="mb-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          {/* 折叠/展开标题栏 */}
+          <button
+            onClick={() => setIsPromoExpanded(!isPromoExpanded)}
+            className="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          >
+            <div className="flex items-center space-x-2">
+              <Image className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+              <span className="font-medium text-gray-700 dark:text-gray-300">章节推文</span>
+              {promoResult && (
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  （封面 + 摘要）
+                </span>
+              )}
+            </div>
+            {isPromoExpanded ? (
+              <ChevronUp className="w-4 h-4 text-gray-500" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-gray-500" />
+            )}
+          </button>
+
+          {/* 展开的内容 */}
+          {isPromoExpanded && (
+            <div className="p-4 bg-white dark:bg-gray-900">
+              {promoError && (
+                <div className="text-red-500 text-sm mb-3">
+                  {promoError}
+                  <button 
+                    onClick={() => setPromoError(null)} 
+                    className="ml-2 underline"
+                  >
+                    关闭
+                  </button>
+                </div>
+              )}
+              
+              {promoResult && (
+                <div className="space-y-4">
+                  {/* 封面图片 */}
+                  {promoResult.imageBase64 && (
+                    <div className="relative">
+                      <img 
+                        src={promoResult.imageBase64} 
+                        alt="章节封面" 
+                        className="w-full rounded-lg shadow-md"
+                        style={{ aspectRatio: '3/1', objectFit: 'cover' }}
+                      />
+                    </div>
+                  )}
+                  
+                  {/* 摘要 */}
+                  <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                    <div className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">
+                      摘要：
+                    </div>
+                    <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
+                      {promoResult.summary}
+                    </p>
+                  </div>
+
+                  {/* 重新生成按钮 */}
+                  <div className="flex justify-end">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={handleGeneratePromo}
+                      disabled={isGeneratingPromo}
+                    >
+                      {isGeneratingPromo ? (
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3 mr-1" />
+                      )}
+                      重新生成
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 错误提示 */}
       {error && (

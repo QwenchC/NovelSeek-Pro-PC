@@ -559,3 +559,150 @@ pub async fn generate_chapter_stream(
 
     Ok(full_content)
 }
+
+/// 生成章节推文（封面图片提示词 + 摘要）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChapterPromoResult {
+    pub image_prompt: String,
+    pub summary: String,
+    pub image_base64: Option<String>,
+}
+
+/// 生成章节摘要和图片提示词（使用DeepSeek）
+#[tauri::command]
+pub async fn generate_chapter_promo(
+    #[allow(non_snake_case)] chapterTitle: String,
+    #[allow(non_snake_case)] chapterContent: String,
+    #[allow(non_snake_case)] deepseekKey: String,
+) -> Result<ChapterPromoResult, String> {
+    let client = Client::new();
+    
+    // 构建提示词：让AI生成摘要和英文图片提示词
+    let prompt = format!(
+        r#"你是一位专业的小说营销专家。请根据以下章节内容，完成两项任务：
+
+## 章节标题
+{}
+
+## 章节内容
+{}
+
+---
+
+请完成以下任务：
+
+### 任务1：生成摘要
+为这一章生成一段精炼的中文摘要，用于社交媒体推广。要求：
+- 字数不超过100字
+- 抓住本章最吸引人的看点
+- 语言生动有悬念感
+
+### 任务2：生成图片提示词
+根据章节内容，生成一段英文图片提示词(image prompt)，用于AI生图。要求：
+- 必须是英文
+- 描述本章最具代表性的场景或氛围
+- 包含画面风格描述（如 cinematic, dramatic lighting, anime style 等）
+- 适合作为章节封面使用
+
+请严格按照以下JSON格式返回，不要添加任何其他内容：
+{{"summary": "中文摘要内容", "image_prompt": "English image prompt here"}}"#,
+        chapterTitle, 
+        // 只取前3000字避免超出token限制
+        if chapterContent.chars().count() > 3000 {
+            chapterContent.chars().take(3000).collect::<String>() + "..."
+        } else {
+            chapterContent.clone()
+        }
+    );
+
+    let request_body = serde_json::json!({
+        "model": "deepseek-chat",
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是一位专业的小说营销专家，擅长提炼故事亮点和创作吸引人的推广文案。请严格按JSON格式返回结果。"
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "max_tokens": 500,
+        "temperature": 0.7
+    });
+
+    let response = client
+        .post("https://api.deepseek.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", deepseekKey))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("API错误: {}", error_text));
+    }
+
+    let response_json: serde_json::Value = response.json().await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let content = response_json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("无法获取AI响应内容")?;
+
+    // 清理AI返回的内容：去除可能的markdown代码块标记
+    let cleaned_content = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    // 解析JSON响应
+    let result: serde_json::Value = serde_json::from_str(cleaned_content)
+        .map_err(|e| format!("解析AI返回的JSON失败: {}。原始内容: {}", e, cleaned_content))?;
+
+    let summary = result["summary"]
+        .as_str()
+        .unwrap_or("摘要生成失败")
+        .to_string();
+    
+    let image_prompt = result["image_prompt"]
+        .as_str()
+        .unwrap_or("A dramatic scene from a novel, cinematic lighting, high quality illustration")
+        .to_string();
+
+    Ok(ChapterPromoResult {
+        image_prompt,
+        summary,
+        image_base64: None,
+    })
+}
+
+/// 使用Pollinations生成图片
+#[tauri::command]
+pub async fn generate_promo_image(
+    prompt: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    #[allow(non_snake_case)] pollinationsKey: Option<String>,
+) -> Result<String, String> {
+    use crate::api::pollinations::{PollinationsClient, ImageGenerationParams};
+    
+    let client = PollinationsClient::new(pollinationsKey, None);
+    
+    let params = ImageGenerationParams {
+        prompt,
+        width: Some(width.unwrap_or(1200)),  // 默认3:1比例
+        height: Some(height.unwrap_or(400)),
+        seed: Some(-1),
+        model: Some("zimage".to_string()),
+        nologo: Some(true),
+        enhance: Some(false),
+    };
+
+    client.generate_image_base64(&params).await
+        .map_err(|e| format!("图片生成失败: {}", e))
+}

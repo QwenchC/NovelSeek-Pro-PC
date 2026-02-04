@@ -13,6 +13,13 @@ export interface Character {
   isProtagonist: boolean; // 是否是主角
 }
 
+// 推文数据接口
+export interface ChapterPromo {
+  imagePrompt: string;
+  summary: string;
+  imageBase64: string | null;
+}
+
 interface AppState {
   // Projects
   projects: Project[];
@@ -30,6 +37,11 @@ interface AppState {
   charactersByProject: Record<string, Character[]>;
   setCharacters: (projectId: string, characters: Character[]) => void;
   getCharacters: (projectId: string) => Character[];
+
+  // 推文数据 (按章节ID存储)
+  promoByChapter: Record<string, ChapterPromo>;
+  setPromo: (chapterId: string, promo: ChapterPromo) => void;
+  getPromo: (chapterId: string) => ChapterPromo | null;
 
   // 世界观设定 (按项目ID存储)
   worldSettingByProject: Record<string, string>;
@@ -85,6 +97,16 @@ export const useAppStore = create<AppState>()(
       })),
       getCharacters: (projectId) => get().charactersByProject[projectId] || [],
 
+      // 推文数据
+      promoByChapter: {},
+      setPromo: (chapterId, promo) => set((state) => ({
+        promoByChapter: {
+          ...state.promoByChapter,
+          [chapterId]: promo,
+        },
+      })),
+      getPromo: (chapterId) => get().promoByChapter[chapterId] || null,
+
       // World Setting
       worldSettingByProject: {},
       setWorldSetting: (projectId, worldSetting) => set((state) => ({
@@ -125,13 +147,14 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'novelseek-storage',
-      // 持久化 API Keys、角色、世界观和时间线数据
+      // 持久化 API Keys、角色、世界观、时间线和推文数据
       partialize: (state) => ({
         deepseekKey: state.deepseekKey,
         pollinationsKey: state.pollinationsKey,
         charactersByProject: state.charactersByProject,
         worldSettingByProject: state.worldSettingByProject,
         timelineByProject: state.timelineByProject,
+        promoByChapter: state.promoByChapter,
       }),
     }
   )
