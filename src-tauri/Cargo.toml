@@ -1,0 +1,36 @@
+[package]
+name = "novelseek-pro-pc"
+version = "0.1.0"
+description = "Professional Novel Generation & Publishing Tool"
+authors = ["NovelSeek Team"]
+license = ""
+repository = ""
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "window-unmaximize", "process-exit", "window-unminimize", "window-start-dragging", "window-minimize", "window-close", "process-relaunch", "window-hide", "window-maximize", "window-show", "shell-open", "dialog-all", "fs-all", "path-all"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.7", features = ["v4", "serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+async-trait = "0.1"
+futures = "0.3"
+log = "0.4"
+env_logger = "0.11"
+urlencoding = "2.1"
+lazy_static = "1.4"
+futures-util = "0.3"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
