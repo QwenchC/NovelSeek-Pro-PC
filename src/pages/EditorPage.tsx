@@ -28,7 +28,7 @@ function stripMarkdown(text: string): string {
 export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
-  const { deepseekKey } = useAppStore();
+  const { deepseekKey, getCharacters } = useAppStore();
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [allChapters, setAllChapters] = useState<Chapter[]>([]);
@@ -140,12 +140,22 @@ export function EditorPage() {
       const previousSummary = getPreviousChapterSummary();
       const currentTail = mode === 'continue' ? getCurrentContentTail() : null;
 
+      // 获取角色信息，确保AI生成时保持角色一致性
+      const characters = projectId ? getCharacters(projectId) : [];
+      const charactersInfo = characters.length > 0 
+        ? characters.map((c, i) => {
+            const isProtag = c.isProtagonist ? '【主角】' : '';
+            return `${i + 1}. ${c.name}${isProtag}\n   - 身份：${c.role || '未设定'}\n   - 性格：${c.personality || '未设定'}\n   - 背景：${c.background || '未设定'}\n   - 动机：${c.motivation || '未设定'}`;
+          }).join('\n')
+        : null;
+
       await invoke<string>('generate_chapter_stream', {
         chapterTitle: chapter.title,
         outlineGoal: chapter.outline_goal || '推进剧情发展',
         conflict: chapter.conflict || '角色面临挑战',
         previousSummary: previousSummary,
         currentContent: currentTail,
+        charactersInfo: charactersInfo,
         targetWords: TARGET_WORDS_PER_GENERATION,
         isContinuation: mode === 'continue',
         deepseekKey: deepseekKey,

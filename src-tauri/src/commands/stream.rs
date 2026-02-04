@@ -213,6 +213,7 @@ pub async fn generate_chapter_stream(
     conflict: String,
     #[allow(non_snake_case)] previousSummary: Option<String>,
     #[allow(non_snake_case)] currentContent: Option<String>,
+    #[allow(non_snake_case)] charactersInfo: Option<String>,
     #[allow(non_snake_case)] targetWords: Option<u32>,
     #[allow(non_snake_case)] isContinuation: Option<bool>,
     #[allow(non_snake_case)] deepseekKey: String,
@@ -225,6 +226,17 @@ pub async fn generate_chapter_stream(
     let word_target = targetWords.unwrap_or(2500);
     
     let mut prompt = String::new();
+    
+    // 如果有角色信息，先添加角色设定（无论是续写还是新章节都需要）
+    if let Some(ref chars) = charactersInfo {
+        prompt.push_str(&format!(
+            r#"【重要：角色设定 - 必须严格遵守】
+以下是本小说的角色设定，生成内容时必须保持角色身份、性格、背景完全一致，不得擅自更改：
+
+{}
+
+"#, chars));
+    }
     
     if is_continue {
         // 续写模式
@@ -242,7 +254,8 @@ pub async fn generate_chapter_stream(
 2. 继续推进剧情发展
 3. 本次续写约{}字
 4. 保持文风和节奏一致
-5. 不要使用markdown格式，直接输出小说正文
+5. 角色的身份、性格必须与上述设定完全一致
+6. 不要使用markdown格式，直接输出小说正文
 
 请直接续写内容，不要添加任何说明或标记："#,
             chapterTitle, 
@@ -274,9 +287,9 @@ pub async fn generate_chapter_stream(
         prompt.push_str(&format!(r#"
 写作要求：
 1. 本次生成约{}字
-2. 保持人物性格一致
+2. 【重要】角色的身份、性格、背景必须与上述角色设定完全一致，不得擅自更改
 3. 场景描写要有画面感
-4. 对话要自然生动
+4. 对话要自然生动，符合角色性格
 5. 如果有前一章内容，请自然衔接，不要突兀
 6. 不要使用markdown格式，直接输出小说正文
 
@@ -285,11 +298,14 @@ pub async fn generate_chapter_stream(
 
     let system_prompt = r#"你是一位优秀的小说作者。你的任务是根据大纲和章节目标，撰写引人入胜的章节内容。
 
+【最重要的规则】
+如果用户提供了角色设定，你必须严格遵守每个角色的身份、性格、背景和动机，不得擅自更改或偏离设定。角色的言行举止必须符合其设定的性格特征。
+
 核心原则：
-1. 保持叙事连贯性 - 如果提供了前一章内容，必须自然衔接
-2. 保持人物性格一致
+1. 角色一致性 - 严格按照提供的角色设定描写人物，保持身份、性格、背景一致
+2. 叙事连贯性 - 如果提供了前一章内容，必须自然衔接
 3. 注重场景描写和画面感
-4. 对话要符合人物口吻
+4. 对话要符合人物口吻和性格设定
 5. 保持叙述节奏，张弛有度
 
 写作风格：
