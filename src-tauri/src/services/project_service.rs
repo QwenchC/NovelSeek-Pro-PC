@@ -20,12 +20,14 @@ impl ProjectService {
             status: "draft".to_string(),
             created_at: now.clone(),
             updated_at: now,
+            cover_images: input.cover_images,
+            default_cover_id: input.default_cover_id,
         };
 
         sqlx::query(
             r#"
-            INSERT INTO projects (id, title, author, genre, description, target_word_count, current_word_count, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO projects (id, title, author, genre, description, target_word_count, current_word_count, status, cover_images, default_cover_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&project.id)
@@ -36,6 +38,8 @@ impl ProjectService {
         .bind(project.target_word_count)
         .bind(project.current_word_count)
         .bind(&project.status)
+        .bind(&project.cover_images)
+        .bind(&project.default_cover_id)
         .bind(&project.created_at)
         .bind(&project.updated_at)
         .execute(pool)
@@ -71,7 +75,7 @@ impl ProjectService {
         sqlx::query(
             r#"
             UPDATE projects 
-            SET title = ?, author = ?, genre = ?, description = ?, target_word_count = ?, updated_at = ?
+            SET title = ?, author = ?, genre = ?, description = ?, target_word_count = ?, cover_images = ?, default_cover_id = ?, updated_at = ?
             WHERE id = ?
             "#
         )
@@ -80,6 +84,8 @@ impl ProjectService {
         .bind(&input.genre)
         .bind(&input.description)
         .bind(input.target_word_count)
+        .bind(&input.cover_images)
+        .bind(&input.default_cover_id)
         .bind(&now)
         .bind(id)
         .execute(pool)

@@ -13,6 +13,8 @@ pub struct Project {
     pub status: String, // draft, in_progress, completed
     pub created_at: String,
     pub updated_at: String,
+    pub cover_images: Option<String>,
+    pub default_cover_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +24,8 @@ pub struct CreateProjectInput {
     pub genre: Option<String>,
     pub description: Option<String>,
     pub target_word_count: Option<i64>,
+    pub cover_images: Option<String>,
+    pub default_cover_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -36,6 +40,7 @@ pub struct Chapter {
     pub cliffhanger: Option<String>,
     pub draft_text: Option<String>,
     pub final_text: Option<String>,
+    pub illustrations: Option<String>,
     pub word_count: i64,
     pub status: String, // draft, review, final
     pub created_at: String,

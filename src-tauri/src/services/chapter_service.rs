@@ -20,6 +20,7 @@ impl ChapterService {
             cliffhanger: None,
             draft_text: None,
             final_text: None,
+            illustrations: None,
             word_count: 0,
             status: "draft".to_string(),
             created_at: now.clone(),
@@ -28,8 +29,8 @@ impl ChapterService {
 
         sqlx::query(
             r#"
-            INSERT INTO chapters (id, project_id, title, order_index, outline_goal, conflict, twist, cliffhanger, draft_text, final_text, word_count, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO chapters (id, project_id, title, order_index, outline_goal, conflict, twist, cliffhanger, draft_text, final_text, illustrations, word_count, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&chapter.id)
@@ -42,6 +43,7 @@ impl ChapterService {
         .bind(&chapter.cliffhanger)
         .bind(&chapter.draft_text)
         .bind(&chapter.final_text)
+        .bind(&chapter.illustrations)
         .bind(chapter.word_count)
         .bind(&chapter.status)
         .bind(&chapter.created_at)
@@ -79,6 +81,7 @@ impl ChapterService {
         id: &str,
         draft_text: Option<String>,
         final_text: Option<String>,
+        illustrations: Option<String>,
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         
@@ -91,12 +94,13 @@ impl ChapterService {
         sqlx::query(
             r#"
             UPDATE chapters 
-            SET draft_text = ?, final_text = ?, word_count = ?, updated_at = ?
+            SET draft_text = ?, final_text = ?, illustrations = COALESCE(?, illustrations), word_count = ?, updated_at = ?
             WHERE id = ?
             "#
         )
         .bind(draft_text)
         .bind(final_text)
+        .bind(illustrations)
         .bind(word_count)
         .bind(now.clone())
         .bind(id)
@@ -131,6 +135,26 @@ impl ChapterService {
         )
         .bind(total)
         .bind(now)
+        .bind(project_id)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 仅更新项目总字数（不修改 updated_at）
+    pub async fn update_project_word_count_only(pool: &SqlitePool, project_id: &str) -> Result<()> {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(word_count), 0) FROM chapters WHERE project_id = ?"
+        )
+        .bind(project_id)
+        .fetch_one(pool)
+        .await?;
+
+        sqlx::query(
+            "UPDATE projects SET current_word_count = ? WHERE id = ?"
+        )
+        .bind(total)
         .bind(project_id)
         .execute(pool)
         .await?;

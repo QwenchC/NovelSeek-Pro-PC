@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use sqlx::{SqlitePool, Row};
 use anyhow::Result;
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -19,6 +19,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             target_word_count INTEGER,
             current_word_count INTEGER DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'draft',
+            cover_images TEXT,
+            default_cover_id TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -26,6 +28,27 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Ensure new columns exist for older databases
+    let project_columns = sqlx::query("PRAGMA table_info(projects);")
+        .fetch_all(pool)
+        .await?;
+    let has_cover_images = project_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "cover_images");
+    if !has_cover_images {
+        sqlx::query("ALTER TABLE projects ADD COLUMN cover_images TEXT")
+            .execute(pool)
+            .await?;
+    }
+    let has_default_cover_id = project_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "default_cover_id");
+    if !has_default_cover_id {
+        sqlx::query("ALTER TABLE projects ADD COLUMN default_cover_id TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     // Chapters table
     sqlx::query(
@@ -41,6 +64,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             cliffhanger TEXT,
             draft_text TEXT,
             final_text TEXT,
+            illustrations TEXT,
             word_count INTEGER DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'draft',
             created_at TEXT NOT NULL,
@@ -51,6 +75,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Ensure new columns exist for older databases
+    let chapter_columns = sqlx::query("PRAGMA table_info(chapters);")
+        .fetch_all(pool)
+        .await?;
+    let has_illustrations = chapter_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "illustrations");
+    if !has_illustrations {
+        sqlx::query("ALTER TABLE chapters ADD COLUMN illustrations TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     // Characters table
     sqlx::query(

@@ -216,6 +216,8 @@ export function CharactersPage() {
         genre: currentProject.genre,
         description: newDescription,
         target_word_count: currentProject.target_word_count,
+        cover_images: currentProject.cover_images ?? null,
+        default_cover_id: currentProject.default_cover_id ?? null,
       });
       
       setCurrentProject({

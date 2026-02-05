@@ -29,8 +29,9 @@ pub async fn update_chapter(
     id: String,
     draft_text: Option<String>,
     final_text: Option<String>,
+    illustrations: Option<String>,
 ) -> Result<(), String> {
-    ChapterService::update_text(&pool, &id, draft_text, final_text)
+    ChapterService::update_text(&pool, &id, draft_text, final_text, illustrations)
         .await
         .map_err(|e| e.to_string())
 }
@@ -47,7 +48,7 @@ pub async fn recalculate_project_word_count(
     pool: State<'_, SqlitePool>,
     project_id: String,
 ) -> Result<i64, String> {
-    ChapterService::update_project_word_count(&pool, &project_id)
+    ChapterService::update_project_word_count_only(&pool, &project_id)
         .await
         .map_err(|e| e.to_string())?;
     

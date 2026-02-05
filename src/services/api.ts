@@ -23,8 +23,8 @@ export const projectApi = {
 export const chapterApi = {
   create: (input: CreateChapterInput) => invoke<Chapter>('create_chapter', { input }),
   getByProject: (projectId: string) => invoke<Chapter[]>('get_chapters', { projectId }),
-  update: (id: string, draftText?: string, finalText?: string) =>
-    invoke<void>('update_chapter', { id, draftText, finalText }),
+  update: (id: string, draftText?: string, finalText?: string, illustrations?: string) =>
+    invoke<void>('update_chapter', { id, draftText, finalText, illustrations }),
   delete: (id: string) => invoke<void>('delete_chapter', { id }),
 };
 

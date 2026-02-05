@@ -143,6 +143,8 @@ export function OutlinePage() {
         genre: currentProject.genre,
         description: outline, // 暂时保存到description
         target_word_count: currentProject.target_word_count,
+        cover_images: currentProject.cover_images ?? null,
+        default_cover_id: currentProject.default_cover_id ?? null,
       });
       
       // 更新本地状态，触发角色管理页面刷新

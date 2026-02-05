@@ -43,6 +43,7 @@ async fn main() {
             commands::stream::generate_outline_stream,
             commands::stream::generate_chapter_stream,
             commands::stream::cancel_generation,
+            commands::stream::generate_illustration_prompt,
             commands::stream::generate_chapter_promo,
             commands::stream::generate_promo_image,
         ])

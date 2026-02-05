@@ -568,6 +568,109 @@ pub struct ChapterPromoResult {
     pub image_base64: Option<String>,
 }
 
+/// 将选中的段落内容转换为专业英文插图提示词
+#[tauri::command]
+pub async fn generate_illustration_prompt(
+    #[allow(non_snake_case)] text: String,
+    #[allow(non_snake_case)] style: Option<String>,
+    #[allow(non_snake_case)] deepseekKey: String,
+) -> Result<String, String> {
+    let client = Client::new();
+    let clipped_text = if text.chars().count() > 3000 {
+        text.chars().take(3000).collect::<String>() + "..."
+    } else {
+        text
+    };
+    let style_text = style.unwrap_or_default();
+    let style_section = if style_text.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"
+用户指定的图片风格（可能包含中文，请先翻译为英文再使用）：
+{}"#,
+            style_text
+        )
+    };
+
+    let prompt = format!(
+        r#"你是专业的AI绘图提示词工程师。请根据下面的小说段落，生成**一条高质量、专业、英文**的插图提示词（image prompt），用于书籍插图或章节配图。
+
+要求：
+- 必须是英文
+- 包含场景、人物、氛围、构图、光线、风格等关键信息
+- 语言精炼、专业，适合图像模型
+- 不要输出任何解释
+
+{}
+
+段落内容：
+{}
+
+请严格按JSON格式输出：
+{{"image_prompt": "your English prompt here"}}"#,
+        style_section,
+        clipped_text
+    );
+
+    let request_body = serde_json::json!({
+        "model": "deepseek-chat",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a professional image prompt engineer. Return only JSON with an English image_prompt."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "max_tokens": 400,
+        "temperature": 0.6
+    });
+
+    let response = client
+        .post("https://api.deepseek.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", deepseekKey))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("API错误: {}", error_text));
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let content = response_json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("无法获取AI响应内容")?;
+
+    // 清理可能的markdown包裹
+    let cleaned_content = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let result: serde_json::Value = serde_json::from_str(cleaned_content)
+        .map_err(|e| format!("解析AI返回的JSON失败: {}。原始内容: {}", e, cleaned_content))?;
+
+    let image_prompt = result["image_prompt"]
+        .as_str()
+        .unwrap_or("A cinematic book illustration, dramatic lighting, highly detailed")
+        .to_string();
+
+    Ok(image_prompt)
+}
+
 /// 生成章节摘要和图片提示词（使用DeepSeek）
 #[tauri::command]
 pub async fn generate_chapter_promo(
@@ -687,6 +790,7 @@ pub async fn generate_promo_image(
     prompt: String,
     width: Option<u32>,
     height: Option<u32>,
+    model: Option<String>,
     #[allow(non_snake_case)] pollinationsKey: Option<String>,
 ) -> Result<String, String> {
     use crate::api::pollinations::{PollinationsClient, ImageGenerationParams};
@@ -698,7 +802,7 @@ pub async fn generate_promo_image(
         width: Some(width.unwrap_or(1200)),  // 默认3:1比例
         height: Some(height.unwrap_or(400)),
         seed: Some(-1),
-        model: Some("zimage".to_string()),
+        model: Some(model.unwrap_or_else(|| "zimage".to_string())),
         nologo: Some(true),
         enhance: Some(false),
     };

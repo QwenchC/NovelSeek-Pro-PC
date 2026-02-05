@@ -3,19 +3,99 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi } from '@services/api';
 import { Button } from '@components/Button';
-import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Chapter, Project } from '@typings/index';
 
+interface CoverImageItem {
+  id: string;
+  name: string;
+  imageBase64: string;
+  prompt?: string;
+  createdAt?: string;
+  config?: {
+    model?: string;
+    style?: string;
+    width?: number;
+    height?: number;
+  };
+}
+
+const createCoverId = () =>
+  typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `cover-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeCoverImages = (raw: string | null | undefined): CoverImageItem[] => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((item, index) => {
+        if (typeof item === 'string') {
+          return {
+            id: createCoverId(),
+            name: `封面 ${index + 1}`,
+            imageBase64: item,
+            createdAt: new Date().toISOString(),
+          };
+        }
+        if (item && typeof item === 'object') {
+          const rawItem = item as Record<string, unknown>;
+          const imageBase64 =
+            (rawItem.imageBase64 as string | undefined) ||
+            (rawItem.image_base64 as string | undefined) ||
+            (rawItem.image as string | undefined) ||
+            (rawItem.base64 as string | undefined);
+
+          if (!imageBase64 || typeof imageBase64 !== 'string') return null;
+
+          return {
+            id: typeof rawItem.id === 'string' && rawItem.id ? rawItem.id : createCoverId(),
+            name:
+              typeof rawItem.name === 'string' && rawItem.name ? rawItem.name : `封面 ${index + 1}`,
+            imageBase64,
+            prompt: typeof rawItem.prompt === 'string' ? rawItem.prompt : undefined,
+            createdAt:
+              typeof rawItem.createdAt === 'string'
+                ? rawItem.createdAt
+                : typeof rawItem.created_at === 'string'
+                  ? (rawItem.created_at as string)
+                  : undefined,
+            config: typeof rawItem.config === 'object' ? (rawItem.config as CoverImageItem['config']) : undefined,
+          };
+        }
+        return null;
+      })
+      .filter((item): item is CoverImageItem => Boolean(item));
+  } catch {
+    return [];
+  }
+};
+
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentProject, setCurrentProject, chapters, setChapters } = useAppStore();
+  const { currentProject, setCurrentProject, chapters, setChapters, deepseekKey, pollinationsKey } = useAppStore();
   const [showEditModal, setShowEditModal] = useState(false);
   const [showOutlineModal, setShowOutlineModal] = useState(false);
   const [showCreateChapterModal, setShowCreateChapterModal] = useState(false);
   const [outlineExpanded, setOutlineExpanded] = useState(false);
+  const [showCoverModal, setShowCoverModal] = useState(false);
+  const [coverImages, setCoverImages] = useState<CoverImageItem[]>([]);
+  const [coverIndex, setCoverIndex] = useState(0);
+  const [defaultCoverId, setDefaultCoverId] = useState<string | null>(null);
+  const [coverGenerating, setCoverGenerating] = useState(false);
+  const [coverError, setCoverError] = useState<string | null>(null);
+  const [coverConfig, setCoverConfig] = useState({
+    model: 'zimage',
+    style: '',
+    width: 1080,
+    height: 1920,
+  });
 
   useEffect(() => {
     if (id) {
@@ -25,6 +105,41 @@ export function ProjectPage() {
       recalculateWordCount(id);
     }
   }, [id]);
+
+  useEffect(() => {
+    if (!showCoverModal) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!coverImages.length) return;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setCoverIndex(prev => Math.max(0, prev - 1));
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setCoverIndex(prev => Math.min(coverImages.length - 1, prev + 1));
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showCoverModal, coverImages.length]);
+
+  useEffect(() => {
+    if (!showCoverModal || !currentProject) return;
+    const parsed = normalizeCoverImages(currentProject.cover_images);
+    setCoverImages(parsed);
+    const initialDefaultId = currentProject.default_cover_id ?? null;
+    setDefaultCoverId(initialDefaultId);
+    if (parsed.length > 0) {
+      const defaultIndex = initialDefaultId
+        ? parsed.findIndex((item) => item.id === initialDefaultId)
+        : -1;
+      setCoverIndex(defaultIndex >= 0 ? defaultIndex : 0);
+    } else {
+      setCoverIndex(0);
+    }
+  }, [showCoverModal]);
 
   const recalculateWordCount = async (projectId: string) => {
     try {
@@ -56,6 +171,30 @@ export function ProjectPage() {
     }
   };
 
+  const persistCoverState = async (nextCovers: CoverImageItem[], nextDefaultId: string | null) => {
+    if (!currentProject) return;
+    try {
+      const cover_images = JSON.stringify(nextCovers);
+      await projectApi.update(currentProject.id, {
+        title: currentProject.title,
+        author: currentProject.author,
+        genre: currentProject.genre,
+        description: currentProject.description,
+        target_word_count: currentProject.target_word_count,
+        cover_images,
+        default_cover_id: nextDefaultId,
+      });
+      setCurrentProject({
+        ...currentProject,
+        cover_images,
+        default_cover_id: nextDefaultId,
+      });
+    } catch (error) {
+      console.error('Failed to save cover images:', error);
+      setCoverError('保存封面失败');
+    }
+  };
+
   const handleDeleteChapter = async (chapterId: string) => {
     if (!confirm('确定要删除这个章节吗？删除后无法恢复！')) {
       return;
@@ -72,6 +211,103 @@ export function ProjectPage() {
   if (!currentProject) {
     return <div>加载中...</div>;
   }
+
+  const handleGenerateCover = async () => {
+    if (!deepseekKey) {
+      setCoverError('请先在设置页面配置 DeepSeek API 密钥');
+      return;
+    }
+
+    setCoverError(null);
+    setCoverGenerating(true);
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/tauri');
+      const baseText = `书名: ${currentProject.title}\n题材: ${currentProject.genre || '未分类'}\n简介: ${currentProject.description || '暂无简介'}`;
+
+      const coverPromptText = `封面设计：参考以下大纲。\n${baseText}`;
+      const prompt = await invoke<string>('generate_illustration_prompt', {
+        text: coverPromptText,
+        style: coverConfig.style?.trim() || null,
+        deepseekKey: deepseekKey,
+      });
+
+      const imageBase64 = await invoke<string>('generate_promo_image', {
+        prompt: prompt,
+        width: coverConfig.width,
+        height: coverConfig.height,
+        model: coverConfig.model,
+        pollinationsKey: pollinationsKey || null,
+      });
+
+      const newCover: CoverImageItem = {
+        id: createCoverId(),
+        name: `封面 ${coverImages.length + 1}`,
+        imageBase64,
+        prompt,
+        createdAt: new Date().toISOString(),
+        config: {
+          model: coverConfig.model,
+          style: coverConfig.style,
+          width: coverConfig.width,
+          height: coverConfig.height,
+        },
+      };
+
+      const nextCovers = [...coverImages, newCover];
+      const nextDefaultId = defaultCoverId ?? newCover.id;
+      setCoverImages(nextCovers);
+      setCoverIndex(nextCovers.length - 1);
+      setDefaultCoverId(nextDefaultId);
+      await persistCoverState(nextCovers, nextDefaultId);
+    } catch (error) {
+      const message = typeof error === 'string' ? error : (error as Error)?.message || '生成封面失败';
+      setCoverError(message);
+    } finally {
+      setCoverGenerating(false);
+    }
+  };
+
+  const handleSetDefaultCover = async () => {
+    const currentCover = coverImages[coverIndex];
+    if (!currentCover) return;
+    const nextDefaultId = currentCover.id;
+    setDefaultCoverId(nextDefaultId);
+    await persistCoverState(coverImages, nextDefaultId);
+  };
+
+  const handleRenameCover = async () => {
+    const currentCover = coverImages[coverIndex];
+    if (!currentCover) return;
+    const nextName = prompt('请输入新的封面名称', currentCover.name);
+    if (!nextName) return;
+    const trimmed = nextName.trim();
+    if (!trimmed) return;
+    const nextCovers = coverImages.map((cover, idx) =>
+      idx === coverIndex ? { ...cover, name: trimmed } : cover
+    );
+    setCoverImages(nextCovers);
+    await persistCoverState(nextCovers, defaultCoverId);
+  };
+
+  const handleDeleteCover = async () => {
+    const currentCover = coverImages[coverIndex];
+    if (!currentCover) return;
+    if (!confirm('确定删除该封面吗？')) return;
+    const nextCovers = coverImages.filter((_, idx) => idx !== coverIndex);
+    let nextDefaultId = defaultCoverId;
+    if (currentCover.id === defaultCoverId) {
+      nextDefaultId = nextCovers.length > 0 ? nextCovers[0].id : null;
+    }
+    const nextIndex = Math.min(coverIndex, Math.max(0, nextCovers.length - 1));
+    setCoverImages(nextCovers);
+    setCoverIndex(nextIndex);
+    setDefaultCoverId(nextDefaultId);
+    await persistCoverState(nextCovers, nextDefaultId);
+  };
+
+  const currentCover = coverImages[coverIndex];
+  const isDefaultCover = currentCover && currentCover.id === defaultCoverId;
 
   return (
     <div className="w-full max-w-full xl:max-w-7xl mx-auto">
@@ -94,6 +330,14 @@ export function ProjectPage() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2 flex-shrink-0">
+            <Button variant="outline" onClick={() => navigate(`/project/${id}/outline`)} className="whitespace-nowrap">
+              <Sparkles className="w-4 h-4 mr-2" />
+              AI生成大纲
+            </Button>
+            <Button variant="outline" onClick={() => setShowCoverModal(true)} className="whitespace-nowrap">
+              <Image className="w-4 h-4 mr-2" />
+              封面
+            </Button>
             <Button variant="outline" onClick={() => navigate(`/project/${id}/characters`)} className="whitespace-nowrap">
               <Users className="w-4 h-4 mr-2" />
               角色
@@ -141,10 +385,6 @@ export function ProjectPage() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <h2 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white">章节列表</h2>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => navigate(`/project/${id}/outline`)} className="whitespace-nowrap">
-              <Sparkles className="w-4 h-4 mr-1 md:mr-2" />
-              <span className="hidden sm:inline">AI</span>大纲
-            </Button>
             <Button onClick={() => setShowCreateChapterModal(true)} className="whitespace-nowrap">
               <Plus className="w-4 h-4 mr-1 md:mr-2" />
               新建
@@ -201,6 +441,181 @@ export function ProjectPage() {
             if (id) loadChapters(id);
           }}
         />
+      )}
+
+      {showCoverModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto mx-4">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">生成封面</h2>
+
+            <div className="relative bg-gray-100 dark:bg-gray-900 rounded-lg overflow-hidden">
+              {coverImages.length > 0 ? (
+                <>
+                  <img
+                    src={currentCover?.imageBase64}
+                    alt="封面预览"
+                    className="w-full rounded-lg object-contain max-h-[45vh]"
+                  />
+                  <button
+                    onClick={() => setCoverIndex(prev => Math.max(0, prev - 1))}
+                    disabled={coverIndex === 0}
+                    className="absolute inset-y-0 left-0 px-3 flex items-center text-white/80 hover:text-white disabled:opacity-30"
+                    title="上一张"
+                  >
+                    <ChevronLeft className="w-8 h-8" />
+                  </button>
+                  <button
+                    onClick={() => setCoverIndex(prev => Math.min(coverImages.length - 1, prev + 1))}
+                    disabled={coverIndex >= coverImages.length - 1}
+                    className="absolute inset-y-0 right-0 px-3 flex items-center text-white/80 hover:text-white disabled:opacity-30"
+                    title="下一张"
+                  >
+                    <ChevronRight className="w-8 h-8" />
+                  </button>
+                  <div className="absolute bottom-2 right-3 text-xs text-white/80">
+                    {coverIndex + 1} / {coverImages.length}
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center justify-center h-64 text-gray-500 dark:text-gray-400">
+                  暂无封面，点击下方按钮生成
+                </div>
+              )}
+            </div>
+
+            {coverImages.length > 0 && (
+              <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                提示：可用键盘左右键翻页
+              </div>
+            )}
+
+            {currentCover && (
+              <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div className="text-sm text-gray-600 dark:text-gray-300">
+                  当前封面：
+                  <span className="font-medium text-gray-900 dark:text-white ml-1">
+                    {currentCover.name}
+                  </span>
+                  {isDefaultCover && (
+                    <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">
+                      默认
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSetDefaultCover}
+                    disabled={isDefaultCover}
+                  >
+                    设为默认
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleRenameCover}>
+                    重命名
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteCover}
+                    className="text-red-600 hover:text-red-700"
+                  >
+                    删除
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {currentCover?.prompt && (
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  提示词
+                </label>
+                <textarea
+                  value={currentCover.prompt}
+                  readOnly
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-24 resize-none"
+                />
+              </div>
+            )}
+
+            {coverError && (
+              <div className="mt-3 text-sm text-red-500">{coverError}</div>
+            )}
+
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  图片生成模型
+                </label>
+                <input
+                  type="text"
+                  value={coverConfig.model}
+                  onChange={e => setCoverConfig(prev => ({ ...prev, model: e.target.value }))}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  placeholder="zimage"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  图片风格
+                </label>
+                <input
+                  type="text"
+                  list="cover-style-options"
+                  value={coverConfig.style}
+                  onChange={e => setCoverConfig(prev => ({ ...prev, style: e.target.value }))}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  placeholder="选择或输入风格（支持中文，会自动翻译）"
+                />
+                <datalist id="cover-style-options">
+                  <option value="cinematic" />
+                  <option value="watercolor" />
+                  <option value="anime" />
+                </datalist>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  宽度
+                </label>
+                <input
+                  type="number"
+                  value={coverConfig.width}
+                  onChange={e => setCoverConfig(prev => ({
+                    ...prev,
+                    width: parseInt(e.target.value, 10) || prev.width,
+                  }))}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  min={64}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  高度
+                </label>
+                <input
+                  type="number"
+                  value={coverConfig.height}
+                  onChange={e => setCoverConfig(prev => ({
+                    ...prev,
+                    height: parseInt(e.target.value, 10) || prev.height,
+                  }))}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  min={64}
+                />
+              </div>
+            </div>
+
+            <div className="flex space-x-3 pt-6">
+              <Button type="button" variant="outline" onClick={() => setShowCoverModal(false)} className="flex-1">
+                关闭
+              </Button>
+              <Button onClick={handleGenerateCover} loading={coverGenerating} className="flex-1">
+                生成封面
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -307,6 +722,8 @@ function EditProjectModal({ project, onClose, onSuccess }: EditProjectModalProps
         genre: genre || undefined,
         description: description || undefined,
         target_word_count: targetWordCount ? parseInt(targetWordCount) : undefined,
+        cover_images: project.cover_images ?? null,
+        default_cover_id: project.default_cover_id ?? null,
       });
       onSuccess();
     } catch (error) {

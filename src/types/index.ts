@@ -9,6 +9,8 @@ export interface Project {
   status: 'draft' | 'in_progress' | 'completed';
   created_at: string;
   updated_at: string;
+  cover_images?: string | null;
+  default_cover_id?: string | null;
 }
 
 export interface CreateProjectInput {
@@ -17,6 +19,8 @@ export interface CreateProjectInput {
   genre?: string;
   description?: string;
   target_word_count?: number;
+  cover_images?: string | null;
+  default_cover_id?: string | null;
 }
 
 export interface Chapter {
@@ -30,6 +34,7 @@ export interface Chapter {
   cliffhanger?: string;
   draft_text?: string;
   final_text?: string;
+  illustrations?: string | null;
   word_count: number;
   status: 'draft' | 'review' | 'final';
   created_at: string;

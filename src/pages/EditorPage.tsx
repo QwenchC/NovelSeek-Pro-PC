@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { chapterApi } from '@services/api';
@@ -16,6 +16,22 @@ interface PromoResult {
   imagePrompt: string;
   summary: string;
   imageBase64: string | null;
+}
+
+interface Illustration {
+  id: string;
+  anchorIndex: number; // 1-based paragraph index
+  paragraphIndices: number[];
+  prompt: string;
+  imageBase64: string;
+  createdAt: string;
+}
+
+interface IllustrationConfig {
+  model: string;
+  width: number;
+  height: number;
+  style: string;
 }
 
 // 去除 Markdown 符号
@@ -51,6 +67,28 @@ export function EditorPage() {
   const [isPromoExpanded, setIsPromoExpanded] = useState(false);
   const [isGeneratingPromo, setIsGeneratingPromo] = useState(false);
   const [promoError, setPromoError] = useState<string | null>(null);
+
+  // 插图相关状态
+  const [isIllustrationMode, setIsIllustrationMode] = useState(false);
+  const [selectedParagraphs, setSelectedParagraphs] = useState<Set<number>>(new Set());
+  const [illustrations, setIllustrations] = useState<Illustration[]>([]);
+  const [activeIllustrationId, setActiveIllustrationId] = useState<string | null>(null);
+  const [illustrationError, setIllustrationError] = useState<string | null>(null);
+  const [isGeneratingIllustration, setIsGeneratingIllustration] = useState(false);
+  const [anchorEdits, setAnchorEdits] = useState<Record<string, string>>({});
+  const [showIllustrationConfig, setShowIllustrationConfig] = useState(false);
+  const [illustrationConfig, setIllustrationConfig] = useState<IllustrationConfig>({
+    model: 'zimage',
+    width: 1920,
+    height: 1080,
+    style: '',
+  });
+  const [illustrationConfigDraft, setIllustrationConfigDraft] = useState<IllustrationConfig>({
+    model: 'zimage',
+    width: 1920,
+    height: 1080,
+    style: '',
+  });
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -76,6 +114,83 @@ export function EditorPage() {
     setWordCount(count);
   }, [content]);
 
+  const parseIllustrations = (raw?: string | null): Illustration[] => {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(item => ({
+          id: String(item.id || `ill-${Date.now()}`),
+          anchorIndex: Number(item.anchorIndex) || 1,
+          paragraphIndices: Array.isArray(item.paragraphIndices)
+            ? item.paragraphIndices.map((n: number) => Number(n)).filter((n: number) => !Number.isNaN(n))
+            : [],
+          prompt: String(item.prompt || ''),
+          imageBase64: String(item.imageBase64 || ''),
+          createdAt: String(item.createdAt || new Date().toISOString()),
+        }))
+        .filter(item => item.imageBase64);
+    } catch {
+      return [];
+    }
+  };
+
+  const paragraphs = useMemo(() => {
+    const normalized = content.replace(/\r\n/g, '\n').trim();
+    if (!normalized) return [];
+    return normalized
+      .split(/\n\s*\n+/)
+      .map(p => p.trim())
+      .filter(Boolean);
+  }, [content]);
+
+  const selectedIndices = useMemo(
+    () => Array.from(selectedParagraphs).sort((a, b) => a - b),
+    [selectedParagraphs]
+  );
+
+  const illustrationsByAnchor = useMemo(() => {
+    const map = new Map<number, Illustration[]>();
+    for (const item of illustrations) {
+      const list = map.get(item.anchorIndex) || [];
+      list.push(item);
+      map.set(item.anchorIndex, list);
+    }
+    return map;
+  }, [illustrations]);
+
+  // 当段落数量变化时，清理超出范围的选择与插图位置
+  useEffect(() => {
+    if (paragraphs.length === 0) {
+      if (selectedParagraphs.size > 0) {
+        setSelectedParagraphs(new Set());
+      }
+      return;
+    }
+
+    setSelectedParagraphs(prev => {
+      const filtered = new Set([...prev].filter(i => i <= paragraphs.length));
+      return filtered;
+    });
+
+    setIllustrations(prev => {
+      let changed = false;
+      const updated = prev.map(item => {
+        const clamped = Math.min(Math.max(1, item.anchorIndex), paragraphs.length);
+        if (clamped !== item.anchorIndex) {
+          changed = true;
+          return { ...item, anchorIndex: clamped };
+        }
+        return item;
+      });
+      if (changed) {
+        setIsSaved(false);
+      }
+      return changed ? updated : prev;
+    });
+  }, [paragraphs.length, selectedParagraphs.size]);
+
   const loadChapterData = async () => {
     try {
       const chapters = await chapterApi.getByProject(projectId!);
@@ -84,6 +199,9 @@ export function EditorPage() {
       if (found) {
         setChapter(found);
         setContent(found.draft_text || found.final_text || '');
+        setIllustrations(parseIllustrations(found.illustrations));
+        setSelectedParagraphs(new Set());
+        setActiveIllustrationId(null);
         setIsSaved(true);
       }
     } catch (error) {
@@ -119,7 +237,8 @@ export function EditorPage() {
     
     setIsSaving(true);
     try {
-      await chapterApi.update(chapterId, content, undefined);
+      const illustrationsPayload = JSON.stringify(illustrations);
+      await chapterApi.update(chapterId, content, undefined, illustrationsPayload);
       setIsSaved(true);
     } catch (error) {
       console.error('Failed to save:', error);
@@ -263,6 +382,125 @@ export function EditorPage() {
     }
   };
 
+  const toggleParagraphSelection = (index: number) => {
+    setSelectedParagraphs(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  };
+
+  const clearParagraphSelection = () => {
+    setSelectedParagraphs(new Set());
+  };
+
+  const toggleIllustrationPreview = (id: string) => {
+    setActiveIllustrationId(prev => (prev === id ? null : id));
+  };
+
+  const handleAnchorInputChange = (id: string, value: string) => {
+    setAnchorEdits(prev => ({ ...prev, [id]: value }));
+  };
+
+  const applyAnchorChange = (id: string) => {
+    if (paragraphs.length === 0) return;
+    const rawValue = anchorEdits[id];
+    const parsed = rawValue ? parseInt(rawValue, 10) : NaN;
+    if (Number.isNaN(parsed)) return;
+    const clamped = Math.min(Math.max(1, parsed), paragraphs.length);
+    setIllustrations(prev =>
+      prev.map(item => (item.id === id ? { ...item, anchorIndex: clamped } : item))
+    );
+    setAnchorEdits(prev => ({ ...prev, [id]: String(clamped) }));
+    setIsSaved(false);
+  };
+
+  const openIllustrationConfig = () => {
+    if (!deepseekKey) {
+      setIllustrationError('请先在设置页面配置 DeepSeek API 密钥');
+      return;
+    }
+    if (selectedIndices.length === 0) {
+      setIllustrationError('请先勾选需要生成插图的段落');
+      return;
+    }
+
+    setIllustrationError(null);
+    setIllustrationConfigDraft({ ...illustrationConfig });
+    setShowIllustrationConfig(true);
+  };
+
+  const generateIllustrationWithConfig = async (config: IllustrationConfig) => {
+    if (!deepseekKey) {
+      setIllustrationError('请先在设置页面配置 DeepSeek API 密钥');
+      return;
+    }
+    if (selectedIndices.length === 0) {
+      setIllustrationError('请先勾选需要生成插图的段落');
+      return;
+    }
+
+    setIllustrationError(null);
+    setIsGeneratingIllustration(true);
+
+    try {
+      const selectedText = selectedIndices
+        .map(index => paragraphs[index - 1])
+        .filter(Boolean)
+        .join('\n\n');
+      const anchorIndex = selectedIndices[0];
+
+      const prompt = await invoke<string>('generate_illustration_prompt', {
+        text: selectedText,
+        style: config.style?.trim() || null,
+        deepseekKey: deepseekKey,
+      });
+
+      const imageBase64 = await invoke<string>('generate_promo_image', {
+        prompt: prompt,
+        width: config.width,
+        height: config.height,
+        model: config.model,
+        pollinationsKey: pollinationsKey || null,
+      });
+
+      const newIllustration: Illustration = {
+        id: `ill-${Date.now()}`,
+        anchorIndex,
+        paragraphIndices: selectedIndices,
+        prompt,
+        imageBase64,
+        createdAt: new Date().toISOString(),
+      };
+
+      setIllustrations(prev => [...prev, newIllustration]);
+      setActiveIllustrationId(newIllustration.id);
+      clearParagraphSelection();
+      setIsSaved(false);
+    } catch (err) {
+      const errorMessage = typeof err === 'string' ? err : (err as Error)?.message || '插图生成失败';
+      setIllustrationError(errorMessage);
+    } finally {
+      setIsGeneratingIllustration(false);
+    }
+  };
+
+  const confirmIllustrationGeneration = async () => {
+    const width = Math.max(64, Math.floor(Number(illustrationConfigDraft.width) || illustrationConfig.width));
+    const height = Math.max(64, Math.floor(Number(illustrationConfigDraft.height) || illustrationConfig.height));
+    const model = illustrationConfigDraft.model?.trim() || 'zimage';
+    const style = illustrationConfigDraft.style?.trim() || '';
+
+    const config = { model, width, height, style };
+    setIllustrationConfig(config);
+    setShowIllustrationConfig(false);
+    await generateIllustrationWithConfig(config);
+  };
+
   // 快捷键支持
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -349,6 +587,16 @@ export function EditorPage() {
                   )}
                   推文
                 </Button>
+                {/* 插图模式按钮 */}
+                <Button
+                  variant={isIllustrationMode ? 'secondary' : 'outline'}
+                  onClick={() => setIsIllustrationMode(prev => !prev)}
+                  className="whitespace-nowrap"
+                  title={isIllustrationMode ? '退出插图模式' : '进入插图模式'}
+                >
+                  <Image className="w-4 h-4 mr-1" />
+                  插图
+                </Button>
               </>
             )}
             <Button onClick={handleSave} loading={isSaving} disabled={isSaved} className="whitespace-nowrap">
@@ -359,129 +607,355 @@ export function EditorPage() {
         </div>
       </div>
 
-      {/* 推文展示区域（封面+摘要） */}
-      {(promoResult || promoError) && (
-        <div className="mb-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          {/* 折叠/展开标题栏 */}
-          <button
-            onClick={() => setIsPromoExpanded(!isPromoExpanded)}
-            className="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-            <div className="flex items-center space-x-2">
-              <Image className="w-4 h-4 text-primary-600 dark:text-primary-400" />
-              <span className="font-medium text-gray-700 dark:text-gray-300">章节推文</span>
-              {promoResult && (
-                <span className="text-xs text-gray-500 dark:text-gray-400">
-                  （封面 + 摘要）
-                </span>
-              )}
-            </div>
-            {isPromoExpanded ? (
-              <ChevronUp className="w-4 h-4 text-gray-500" />
-            ) : (
-              <ChevronDown className="w-4 h-4 text-gray-500" />
-            )}
-          </button>
-
-          {/* 展开的内容 */}
-          {isPromoExpanded && (
-            <div className="p-4 bg-white dark:bg-gray-900">
-              {promoError && (
-                <div className="text-red-500 text-sm mb-3">
-                  {promoError}
-                  <button 
-                    onClick={() => setPromoError(null)} 
-                    className="ml-2 underline"
-                  >
-                    关闭
-                  </button>
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-4">
+        <div className="w-full lg:w-4/5 flex flex-col min-h-0 lg:order-1">
+          {/* 推文展示区域（封面+摘要） */}
+          {(promoResult || promoError) && (
+            <div className="mb-4 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+              {/* 折叠/展开标题栏 */}
+              <button
+                onClick={() => setIsPromoExpanded(!isPromoExpanded)}
+                className="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                <div className="flex items-center space-x-2">
+                  <Image className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                  <span className="font-medium text-gray-700 dark:text-gray-300">章节推文</span>
+                  {promoResult && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      （封面 + 摘要）
+                    </span>
+                  )}
                 </div>
-              )}
-              
-              {promoResult && (
-                <div className="space-y-4">
-                  {/* 封面图片 */}
-                  {promoResult.imageBase64 && (
-                    <div className="relative">
-                      <img 
-                        src={promoResult.imageBase64} 
-                        alt="章节封面" 
-                        className="w-full rounded-lg shadow-md"
-                        style={{ aspectRatio: '3/1', objectFit: 'cover' }}
-                      />
+                {isPromoExpanded ? (
+                  <ChevronUp className="w-4 h-4 text-gray-500" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-gray-500" />
+                )}
+              </button>
+
+              {/* 展开的内容 */}
+              {isPromoExpanded && (
+                <div className="p-4 bg-white dark:bg-gray-900">
+                  {promoError && (
+                    <div className="text-red-500 text-sm mb-3">
+                      {promoError}
+                      <button 
+                        onClick={() => setPromoError(null)} 
+                        className="ml-2 underline"
+                      >
+                        关闭
+                      </button>
                     </div>
                   )}
                   
-                  {/* 摘要 */}
-                  <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
-                    <div className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">
-                      摘要：
-                    </div>
-                    <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
-                      {promoResult.summary}
-                    </p>
-                  </div>
-
-                  {/* 重新生成按钮 */}
-                  <div className="flex justify-end">
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={handleGeneratePromo}
-                      disabled={isGeneratingPromo}
-                    >
-                      {isGeneratingPromo ? (
-                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                      ) : (
-                        <RefreshCw className="w-3 h-3 mr-1" />
+                  {promoResult && (
+                    <div className="space-y-4">
+                      {/* 封面图片 */}
+                      {promoResult.imageBase64 && (
+                        <div className="relative">
+                          <img 
+                            src={promoResult.imageBase64} 
+                            alt="章节封面" 
+                            className="w-full rounded-lg shadow-md"
+                            style={{ aspectRatio: '3/1', objectFit: 'cover' }}
+                          />
+                        </div>
                       )}
-                      重新生成
-                    </Button>
-                  </div>
+                      
+                      {/* 摘要 */}
+                      <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                        <div className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">
+                          摘要：
+                        </div>
+                        <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
+                          {promoResult.summary}
+                        </p>
+                      </div>
+
+                      {/* 重新生成按钮 */}
+                      <div className="flex justify-end">
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={handleGeneratePromo}
+                          disabled={isGeneratingPromo}
+                        >
+                          {isGeneratingPromo ? (
+                            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-3 h-3 mr-1" />
+                          )}
+                          重新生成
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           )}
-        </div>
-      )}
 
-      {/* 错误提示 */}
-      {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-4">
-          <p className="text-red-600 dark:text-red-400">{error}</p>
-          <button 
-            onClick={() => setError(null)} 
-            className="text-sm text-red-500 underline mt-1"
-          >
-            关闭
-          </button>
-        </div>
-      )}
+          {/* 错误提示 */}
+          {error && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-4">
+              <p className="text-red-600 dark:text-red-400">{error}</p>
+              <button 
+                onClick={() => setError(null)} 
+                className="text-sm text-red-500 underline mt-1"
+              >
+                关闭
+              </button>
+            </div>
+          )}
 
-      {/* 生成状态指示器 */}
-      {isGenerating && (
-        <div className="flex items-center mb-4 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-900/20 p-3 rounded-lg">
-          <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-          <span>AI正在生成内容...</span>
-        </div>
-      )}
+          {/* 生成状态指示器 */}
+          {isGenerating && (
+            <div className="flex items-center mb-4 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-900/20 p-3 rounded-lg">
+              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+              <span>AI正在生成内容...</span>
+            </div>
+          )}
 
-      {/* 编辑区域 */}
-      <div className="flex-1 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={handleContentChange}
-          className="w-full h-full resize-none border-none focus:outline-none dark:bg-gray-800 dark:text-white p-6 font-serif text-lg leading-relaxed"
-          placeholder="在这里开始写作...
+          {/* 编辑区域 */}
+          <div className="flex-1 min-h-0 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <textarea
+              ref={textareaRef}
+              value={content}
+              onChange={handleContentChange}
+              className="w-full h-full resize-none border-none focus:outline-none dark:bg-gray-800 dark:text-white p-6 font-serif text-lg leading-relaxed"
+              placeholder="在这里开始写作...
 
 提示：
 - 使用 Ctrl+S 快速保存
 - 点击「AI续写」让AI继续创作
 - 可以随时编辑AI生成的内容"
-          disabled={isGenerating}
-        />
+              disabled={isGenerating}
+            />
+          </div>
+        </div>
+        <div className="w-full lg:w-1/5 lg:min-w-[260px] flex flex-col min-h-0 lg:order-2">
+          {/* 插图模式面板（段落列表） */}
+          <div className="mb-4 lg:mb-0 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden flex flex-col h-full min-h-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-gray-50 dark:bg-gray-800">
+              <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <Image className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                <span className="font-medium">插图段落</span>
+                <span className="text-xs text-gray-500">({paragraphs.length} 段)</span>
+                {isIllustrationMode && (
+                  <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
+                    插图模式
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={openIllustrationConfig}
+                  loading={isGeneratingIllustration}
+                  disabled={!isIllustrationMode || selectedIndices.length === 0}
+                  className="whitespace-nowrap"
+                >
+                  生成插图{selectedIndices.length > 0 ? `（${selectedIndices.length}段）` : ''}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={clearParagraphSelection}
+                  disabled={selectedIndices.length === 0}
+                  className="whitespace-nowrap"
+                >
+                  清空勾选
+                </Button>
+              </div>
+            </div>
+
+            {illustrationError && (
+              <div className="px-3 pb-2 text-sm text-red-500 bg-red-50 dark:bg-red-900/20 border-t border-red-200 dark:border-red-800">
+                {illustrationError}
+              </div>
+            )}
+
+            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-900">
+              {paragraphs.length === 0 ? (
+                <div className="p-4 text-sm text-gray-500 dark:text-gray-400">暂无内容，无法生成插图</div>
+              ) : (
+                paragraphs.map((para, idx) => {
+                  const index = idx + 1;
+                  const items = illustrationsByAnchor.get(index) || [];
+                  const isSelected = selectedParagraphs.has(index);
+
+                  return (
+                    <div
+                      key={index}
+                      className={`flex items-start gap-3 p-3 ${isSelected ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}
+                    >
+                      <div className="flex flex-col items-center gap-2 pt-1 w-12">
+                        <span className="text-[10px] text-gray-400">#{index}</span>
+                        {isIllustrationMode && (
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleParagraphSelection(index)}
+                            className="h-4 w-4 accent-primary-600"
+                          />
+                        )}
+                        <div className="flex flex-col gap-1">
+                          {items.map(item => (
+                            <button
+                              key={item.id}
+                              onClick={() => toggleIllustrationPreview(item.id)}
+                              className={`p-1 rounded-full border ${
+                                activeIllustrationId === item.id
+                                  ? 'bg-primary-100 border-primary-400 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                                  : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-100 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-300'
+                              }`}
+                              title="查看插图"
+                            >
+                              <Image className="w-3 h-3" />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                          {para}
+                        </p>
+
+                        {items.map(item => (
+                          activeIllustrationId === item.id && (
+                            <div
+                              key={`${item.id}-preview`}
+                              className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-3"
+                            >
+                              <img
+                                src={item.imageBase64}
+                                alt="插图"
+                                className="w-full rounded-md shadow-sm"
+                              />
+                              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                                <span className="text-gray-500 dark:text-gray-400">位置</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={paragraphs.length}
+                                  value={anchorEdits[item.id] ?? String(item.anchorIndex)}
+                                  onChange={e => handleAnchorInputChange(item.id, e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      applyAnchorChange(item.id);
+                                    }
+                                  }}
+                                  className="w-20 px-2 py-1 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => applyAnchorChange(item.id)}
+                                >
+                                  移动
+                                </Button>
+                              </div>
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
       </div>
+
+      {showIllustrationConfig && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">插图生成设置</h2>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  模型
+                </label>
+                <input
+                  type="text"
+                  value={illustrationConfigDraft.model}
+                  onChange={e => setIllustrationConfigDraft(prev => ({ ...prev, model: e.target.value }))}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  placeholder="zimage"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    宽度
+                  </label>
+                  <input
+                    type="number"
+                    value={illustrationConfigDraft.width}
+                    onChange={e => setIllustrationConfigDraft(prev => ({
+                      ...prev,
+                      width: parseInt(e.target.value, 10) || prev.width,
+                    }))}
+                    className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                    min={64}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    高度
+                  </label>
+                  <input
+                    type="number"
+                    value={illustrationConfigDraft.height}
+                    onChange={e => setIllustrationConfigDraft(prev => ({
+                      ...prev,
+                      height: parseInt(e.target.value, 10) || prev.height,
+                    }))}
+                    className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                    min={64}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  图片风格
+                </label>
+                <input
+                  type="text"
+                  list="illustration-style-options"
+                  value={illustrationConfigDraft.style}
+                  onChange={e => setIllustrationConfigDraft(prev => ({ ...prev, style: e.target.value }))}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  placeholder="选择或输入风格（支持中文，会自动翻译）"
+                />
+                <datalist id="illustration-style-options">
+                  <option value="cinematic" />
+                  <option value="watercolor" />
+                  <option value="anime" />
+                </datalist>
+              </div>
+
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                默认模型为 zimage，建议 16:9 或 3:2 比例更适合插图展示
+              </p>
+            </div>
+
+            <div className="flex space-x-3 pt-6">
+              <Button type="button" variant="outline" onClick={() => setShowIllustrationConfig(false)} className="flex-1">
+                取消
+              </Button>
+              <Button onClick={confirmIllustrationGeneration} loading={isGeneratingIllustration} className="flex-1">
+                生成
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
