@@ -70,7 +70,7 @@ const normalizeCoverImages = (raw: string | null | undefined): CoverImageItem[] 
         }
         return null;
       })
-      .filter((item): item is CoverImageItem => Boolean(item));
+      .filter(Boolean) as CoverImageItem[];
   } catch {
     return [];
   }
