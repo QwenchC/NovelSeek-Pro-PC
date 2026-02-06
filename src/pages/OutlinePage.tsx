@@ -1,13 +1,19 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore, Character } from '@store/index';
-import { projectApi } from '@services/api';
+import { projectApi, chapterApi } from '@services/api';
 import { Button } from '@components/Button';
-import { ArrowLeft, Sparkles, StopCircle, Save, RefreshCw, Check } from 'lucide-react';
+import { ArrowLeft, Sparkles, StopCircle, Save, RefreshCw, Check, Lock, Plus, Edit3, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+
+interface OutlineLine {
+  id: string;
+  text: string;
+  type: 'heading' | 'text' | 'blank';
+}
 
 export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +30,9 @@ export function OutlinePage() {
   const [requirements, setRequirements] = useState('');
   const [isSaved, setIsSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isEditingOutline, setIsEditingOutline] = useState(false);
+  const [outlineLines, setOutlineLines] = useState<OutlineLine[]>([]);
+  const [headingItemPolicy, setHeadingItemPolicy] = useState<Record<string, boolean>>({});
   
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -39,6 +48,212 @@ export function OutlinePage() {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
   }, [outline, isGenerating]);
+
+  useEffect(() => {
+    if (!isEditingOutline) {
+      setOutlineLines(parseOutlineLines(outline));
+    }
+  }, [outline, isEditingOutline]);
+
+  const parseOutlineLines = (text: string): OutlineLine[] => {
+    if (!text) return [];
+    return text.split('\n').map((line, index) => {
+      const isHeading = /^#{1,6}\s+/.test(line);
+      const isBlank = line.trim().length === 0;
+      return {
+        id: `line-${index}-${Date.now()}`,
+        text: line,
+        type: isHeading ? 'heading' : isBlank ? 'blank' : 'text',
+      };
+    });
+  };
+
+  const buildOutlineFromLines = (lines: OutlineLine[]): string =>
+    lines.map(line => line.text).join('\n');
+
+  const handleOutlineLineChange = (id: string, value: string) => {
+    setOutlineLines(prev =>
+      prev.map(line => (line.id === id ? { ...line, text: value } : line))
+    );
+    setIsSaved(false);
+  };
+
+  const parseOutlineItem = (text: string): {
+    name: string;
+    value: string;
+    prefix: string;
+    bold: boolean;
+    separator: string;
+    separatorSpace: string;
+  } | null => {
+    const match = text.match(
+      /^(\s*)(?:([-*+]|\d+[.)])(\s*))?(?:\*\*(.+?)\*\*|([^:：]+))\s*([：:])(\s*)(.*)$/
+    );
+    if (!match) return null;
+    const leading = match[1] ?? '';
+    const marker = match[2] ?? '';
+    const markerSpace = match[3] ?? '';
+    const boldName = match[4];
+    const plainName = match[5];
+    const name = (boldName ?? plainName ?? '').trim();
+    const separator = match[6] ?? '：';
+    const separatorSpace = match[7] ?? '';
+    const value = match[8] ?? '';
+    return {
+      name,
+      value,
+      prefix: `${leading}${marker ? marker + markerSpace : ''}`,
+      bold: Boolean(boldName),
+      separator,
+      separatorSpace,
+    };
+  };
+
+  const getItemFormatForHeading = (headingIndex: number) => {
+    let separator = '：';
+    let separatorSpace = '';
+    let bold = true;
+    let hasItem = false;
+    let numberLeading = '';
+    let numberSuffix = '.';
+    let numberSpace = ' ';
+    let maxNumber = 0;
+    let bulletLeading = '';
+    let bulletMarker = '-';
+    let bulletSpace = ' ';
+    let hasNumber = false;
+    let hasBullet = false;
+
+    for (let i = headingIndex + 1; i < outlineLines.length; i += 1) {
+      const next = outlineLines[i];
+      if (next.type === 'heading') break;
+      if (next.type !== 'text') continue;
+      const item = parseOutlineItem(next.text);
+      if (!item) continue;
+
+      if (!hasItem) {
+        separator = item.separator;
+        separatorSpace = item.separatorSpace;
+        bold = item.bold;
+        hasItem = true;
+      }
+
+      const numberMatch = next.text.match(/^(\s*)(\d+)([.)])(\s+)/);
+      if (numberMatch) {
+        hasNumber = true;
+        numberLeading = numberMatch[1];
+        numberSuffix = numberMatch[3];
+        numberSpace = numberMatch[4];
+        const value = parseInt(numberMatch[2], 10);
+        if (value > maxNumber) maxNumber = value;
+        continue;
+      }
+
+      const bulletMatch = next.text.match(/^(\s*)([-*+])(\s+)/);
+      if (bulletMatch) {
+        hasBullet = true;
+        bulletLeading = bulletMatch[1];
+        bulletMarker = bulletMatch[2];
+        bulletSpace = bulletMatch[3];
+      }
+    }
+
+    if (hasNumber) {
+      return {
+        prefix: `${numberLeading}${maxNumber + 1}${numberSuffix}${numberSpace}`,
+        bold,
+        separator,
+        separatorSpace,
+      };
+    }
+    if (hasBullet) {
+      return {
+        prefix: `${bulletLeading}${bulletMarker}${bulletSpace}`,
+        bold,
+        separator,
+        separatorSpace,
+      };
+    }
+    return {
+      prefix: '- ',
+      bold: true,
+      separator: '：',
+      separatorSpace: '',
+    };
+  };
+
+  const buildHeadingItemPolicy = (lines: OutlineLine[]): Record<string, boolean> => {
+    const policy: Record<string, boolean> = {};
+    lines.forEach((line, index) => {
+      if (line.type !== 'heading') return;
+      let hasItem = false;
+      for (let i = index + 1; i < lines.length; i += 1) {
+        const next = lines[i];
+        if (next.type === 'heading') break;
+        if (next.type === 'text' && parseOutlineItem(next.text)) {
+          hasItem = true;
+          break;
+        }
+      }
+      policy[line.id] = hasItem;
+    });
+    return policy;
+  };
+
+  const handleOutlineItemChange = (
+    id: string,
+    name: string,
+    value: string,
+    prefix: string,
+    bold: boolean,
+    separator: string,
+    separatorSpace: string
+  ) => {
+    const safeName = name.trim() || '条目';
+    const namePart = bold ? `**${safeName}**` : safeName;
+    const nextText = `${prefix}${namePart}${separator}${separatorSpace}${value}`;
+    setOutlineLines(prev =>
+      prev.map(line => (line.id === id ? { ...line, text: nextText } : line))
+    );
+    setIsSaved(false);
+  };
+
+  const addOutlineItem = (headingIndex: number) => {
+    const format = getItemFormatForHeading(headingIndex);
+    const namePart = format.bold ? `**条目**` : '条目';
+    setOutlineLines(prev => {
+      const next = [...prev];
+      let insertAt = headingIndex + 1;
+      while (insertAt < next.length && next[insertAt].type !== 'heading') {
+        insertAt += 1;
+      }
+      next.splice(insertAt, 0, {
+        id: `line-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        text: `${format.prefix}${namePart}${format.separator}${format.separatorSpace}`,
+        type: 'text',
+      });
+      return next;
+    });
+    setIsSaved(false);
+  };
+
+  const removeOutlineItem = (id: string) => {
+    setOutlineLines(prev => prev.filter(line => line.id !== id));
+    setIsSaved(false);
+  };
+
+  const toggleOutlineEdit = () => {
+    if (!outline) return;
+    setIsEditingOutline(prev => {
+      const next = !prev;
+      if (next) {
+        const lines = parseOutlineLines(outline);
+        setOutlineLines(lines);
+        setHeadingItemPolicy(buildHeadingItemPolicy(lines));
+      }
+      return next;
+    });
+  };
 
   const loadProject = async (projectId: string) => {
     try {
@@ -133,7 +348,8 @@ export function OutlinePage() {
   };
 
   const handleSave = async () => {
-    if (!currentProject || !outline) return;
+    const outlineToSave = isEditingOutline ? buildOutlineFromLines(outlineLines) : outline;
+    if (!currentProject || !outlineToSave) return;
 
     try {
       // 保存大纲到项目描述字段（或专门的大纲字段）
@@ -141,7 +357,7 @@ export function OutlinePage() {
         title: currentProject.title,
         author: currentProject.author,
         genre: currentProject.genre,
-        description: outline, // 暂时保存到description
+        description: outlineToSave, // 暂时保存到description
         target_word_count: currentProject.target_word_count,
         cover_images: currentProject.cover_images ?? null,
         default_cover_id: currentProject.default_cover_id ?? null,
@@ -150,13 +366,14 @@ export function OutlinePage() {
       // 更新本地状态，触发角色管理页面刷新
       setCurrentProject({
         ...currentProject,
-        description: outline,
+        description: outlineToSave,
       });
+      setOutline(outlineToSave);
       
       // 从新大纲解析角色并更新 store
       if (id) {
         console.log('OutlinePage handleSave: 开始解析并保存角色到 store, projectId=', id);
-        const parsedCharacters = parseCharactersFromOutline(outline);
+        const parsedCharacters = parseCharactersFromOutline(outlineToSave);
         console.log('OutlinePage handleSave: 解析到角色数量:', parsedCharacters.length);
         if (parsedCharacters.length > 0) {
           setCharacters(id, parsedCharacters);
@@ -166,14 +383,14 @@ export function OutlinePage() {
         }
         
         // 解析并保存世界观设定
-        const worldSetting = parseWorldSettingFromOutline(outline);
+        const worldSetting = parseWorldSettingFromOutline(outlineToSave);
         if (worldSetting) {
           setWorldSetting(id, worldSetting);
           console.log('OutlinePage handleSave: 已保存世界观设定');
         }
         
         // 解析并保存时间线事件
-        const timeline = parseTimelineFromOutline(outline);
+        const timeline = parseTimelineFromOutline(outlineToSave);
         if (timeline) {
           setTimeline(id, timeline);
           console.log('OutlinePage handleSave: 已保存时间线事件');
@@ -182,10 +399,12 @@ export function OutlinePage() {
       
       setIsSaved(true);
       
-      // 解析大纲并创建章节
-      const chaptersCreated = await parseAndCreateChapters(outline);
-      if (chaptersCreated > 0) {
-        alert(`大纲已保存，成功创建 ${chaptersCreated} 个章节！`);
+      const { created, updated } = await syncChaptersFromOutline(outlineToSave);
+      if (created > 0 || updated > 0) {
+        const parts = [];
+        if (created > 0) parts.push(`创建 ${created} 个章节`);
+        if (updated > 0) parts.push(`更新 ${updated} 个章节预览`);
+        alert(`大纲已保存，${parts.join('，')}`);
       } else {
         alert('大纲已保存！');
       }
@@ -216,12 +435,12 @@ export function OutlinePage() {
     
     blocks.forEach((block, index) => {
       const lines = block.trim().split('\n');
-      let nameLine = lines[0]?.trim() || '';
+      const nameLine = lines[0]?.trim() || '';
       if (!nameLine) return;
 
       // 清理名字：移除序号、星号等
-      let name = nameLine
-        .replace(/^[\d\.\s]+/, '')     // 移除开头的数字和点
+      const name = nameLine
+        .replace(/^[\d.\s]+/, '')      // 移除开头的数字和点
         .replace(/\*\*/g, '')          // 移除 Markdown 加粗符号
         .replace(/^\s*[-*]\s*/, '')    // 移除列表符号
         .trim();
@@ -289,101 +508,112 @@ export function OutlinePage() {
     return timelineSection[0].trim();
   };
 
-  // 解析大纲内容，自动创建章节
-  const parseAndCreateChapters = async (outlineText: string): Promise<number> => {
-    // 匹配章节模式: ### 第X章、### Chapter X 等（必须以 ### 开头的标题行）
-    // 这样可以避免匹配到正文中的"第X章事件"等描述
+  const parseChaptersFromOutline = (outlineText: string) => {
     const chapterPatterns = [
-      /^###\s*第(\d+)章[：:]\s*(.+?)$/gm,   // ### 第X章：标题
-      /^###\s*第(\d+)章\s+(.+?)$/gm,        // ### 第X章 标题
-      /^###\s*Chapter\s+(\d+)[：:]\s*(.+?)$/gim, // ### Chapter X: Title
-      /^第(\d+)章[：:]\s*(.+?)$/gm,          // 第X章：标题（无###但在行首）
+      /^###\s*第(\d+)章[：:]\s*(.+?)$/gm,
+      /^###\s*第(\d+)章\s+(.+?)$/gm,
+      /^###\s*Chapter\s+(\d+)[：:]\s*(.+?)$/gim,
+      /^第(\d+)章[：:]\s*(.+?)$/gm,
     ];
 
     const chapters: Array<{ order: number; title: string; goal: string; conflict: string }> = [];
-    
+
     for (const pattern of chapterPatterns) {
       const lines = outlineText.split('\n');
-      
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const resetPattern = new RegExp(pattern.source, pattern.flags);
         const match = resetPattern.exec(line);
-        
-        if (match) {
-          const order = parseInt(match[1]);
-          const title = match[2].trim();
-          
-          // 获取该章节后面的描述（目标、冲突、时间、结尾钩子等）
-          let time = '';
-          let goal = '';
-          let conflict = '';
-          let hook = '';
-          
-          for (let j = i + 1; j < lines.length && j < i + 15; j++) {
-            const nextLine = lines[j].trim();
-            // 遇到下一个章节标题时停止
-            if (nextLine.match(/^###?\s*第\d+章|^###?\s*Chapter\s+\d+/i)) {
-              break;
-            }
-            // 提取时间
-            const timeMatch = nextLine.match(/^[*-]?\s*\*?\*?时间\*?\*?[：:]\s*(.+)/);
-            if (timeMatch) {
-              time = timeMatch[1].trim();
-            }
-            // 提取目标
-            const goalMatch = nextLine.match(/^[*-]?\s*\*?\*?目标\*?\*?[：:]\s*(.+)/);
-            if (goalMatch) {
-              goal = goalMatch[1].trim();
-            }
-            // 提取冲突
-            const conflictMatch = nextLine.match(/^[*-]?\s*\*?\*?冲突\*?\*?[：:]\s*(.+)/);
-            if (conflictMatch) {
-              conflict = conflictMatch[1].trim();
-            }
-            // 提取结尾钩子
-            const hookMatch = nextLine.match(/^[*-]?\s*\*?\*?结尾钩子\*?\*?[：:]\s*(.+)/);
-            if (hookMatch) {
-              hook = hookMatch[1].trim();
-            }
+        if (!match) continue;
+
+        const order = parseInt(match[1], 10);
+        const title = match[2].trim();
+
+        let time = '';
+        let goal = '';
+        let conflict = '';
+        let hook = '';
+
+        for (let j = i + 1; j < lines.length && j < i + 15; j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine.match(/^###?\s*第\d+章|^###?\s*Chapter\s+\d+/i)) {
+            break;
           }
-          
-          // 将时间和结尾钩子信息合并到goal中，提供更完整的章节指导
-          const fullGoal = [
-            time ? `时间：${time}` : '',
-            goal ? `目标：${goal}` : '',
-            hook ? `结尾钩子：${hook}` : '',
-          ].filter(Boolean).join('\n');
-          
-          if (!chapters.find(c => c.order === order)) {
-            chapters.push({ order, title, goal: fullGoal || goal, conflict: conflict });
+          const timeMatch = nextLine.match(/^[*-]?\s*\*?\*?(时间|Time)\*?\*?[：:]\s*(.+)/i);
+          if (timeMatch) {
+            time = timeMatch[2].trim();
+          }
+          const goalMatch = nextLine.match(/^[*-]?\s*\*?\*?(目标|Goal)\*?\*?[：:]\s*(.+)/i);
+          if (goalMatch) {
+            goal = goalMatch[2].trim();
+          }
+          const conflictMatch = nextLine.match(/^[*-]?\s*\*?\*?(冲突|Conflict)\*?\*?[：:]\s*(.+)/i);
+          if (conflictMatch) {
+            conflict = conflictMatch[2].trim();
+          }
+          const hookMatch = nextLine.match(/^[*-]?\s*\*?\*?(结尾钩子|Hook)\*?\*?[：:]\s*(.+)/i);
+          if (hookMatch) {
+            hook = hookMatch[2].trim();
           }
         }
+
+        const fullGoal = [
+          time ? `时间：${time}` : '',
+          goal ? `目标：${goal}` : '',
+          hook ? `结尾钩子：${hook}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        if (!chapters.find(c => c.order === order)) {
+          chapters.push({ order, title, goal: fullGoal || goal, conflict });
+        }
       }
-      
       if (chapters.length > 0) break;
     }
 
-    // 创建章节
-    let created = 0;
-    for (const chapter of chapters.sort((a, b) => a.order - b.order)) {
-      try {
-        await invoke('create_chapter', {
-          input: {
+    return chapters;
+  };
+
+  const syncChaptersFromOutline = async (outlineText: string) => {
+    if (!id) return { created: 0, updated: 0 };
+    const parsed = parseChaptersFromOutline(outlineText);
+    if (parsed.length === 0) return { created: 0, updated: 0 };
+
+    const chapters = await chapterApi.getByProject(id);
+    const byOrder = new Map(parsed.map(item => [item.order, item]));
+    const existingByOrder = new Map(chapters.map(chapter => [chapter.order_index, chapter]));
+
+    const toCreate = parsed.filter(item => !existingByOrder.has(item.order));
+    const toUpdate = chapters.filter(chapter => byOrder.has(chapter.order_index));
+
+    if (toCreate.length > 0) {
+      await Promise.all(
+        toCreate.map(item =>
+          chapterApi.create({
             project_id: id,
-            title: chapter.title,
-            order_index: chapter.order,
-            outline_goal: chapter.goal || undefined,
-            conflict: chapter.conflict || undefined,
-          }
-        });
-        created++;
-      } catch (err) {
-        console.error(`Failed to create chapter ${chapter.order}:`, err);
-      }
+            title: item.title,
+            order_index: item.order,
+            outline_goal: item.goal || undefined,
+            conflict: item.conflict || undefined,
+          })
+        )
+      );
     }
 
-    return created;
+    if (toUpdate.length > 0) {
+      await Promise.all(
+        toUpdate.map(chapter => {
+          const parsedChapter = byOrder.get(chapter.order_index)!;
+          return chapterApi.updateMeta(chapter.id, {
+            outline_goal: parsedChapter.goal || undefined,
+            conflict: parsedChapter.conflict || undefined,
+          });
+        })
+      );
+    }
+
+    return { created: toCreate.length, updated: toUpdate.length };
   };
 
   if (!currentProject) {
@@ -413,6 +643,17 @@ export function OutlinePage() {
               <Check className="w-4 h-4 mr-1" />
               已保存
             </span>
+          )}
+          {outline && (
+            <Button
+              variant="outline"
+              onClick={toggleOutlineEdit}
+              disabled={isGenerating}
+              className="whitespace-nowrap"
+            >
+              <Edit3 className="w-4 h-4 mr-1 md:mr-2" />
+              {isEditingOutline ? '退出编辑' : '编辑大纲'}
+            </Button>
           )}
           {outline && !isGenerating && (
             <Button onClick={handleSave} disabled={isSaved} className="whitespace-nowrap">
@@ -487,6 +728,116 @@ export function OutlinePage() {
             <Sparkles className="w-12 h-12 mb-4 opacity-50" />
             <p className="text-lg">点击上方按钮开始生成大纲</p>
             <p className="text-sm mt-2">AI将根据项目信息生成详细的章节大纲</p>
+          </div>
+        ) : isEditingOutline ? (
+          <div className="space-y-3">
+            {isGenerating && (
+              <div className="flex items-center mb-2 text-primary-600 dark:text-primary-400">
+                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                <span>正在生成中...</span>
+              </div>
+            )}
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              标题已锁定不可修改，正文与条目可编辑
+            </div>
+            {outlineLines.map((line, index) => {
+              if (line.type === 'blank') {
+                return <div key={line.id} className="h-2" />;
+              }
+              if (line.type === 'heading') {
+                const levelMatch = line.text.match(/^(#+)\s+/);
+                const level = levelMatch ? levelMatch[1].length : 1;
+                const headingText = line.text.replace(/^#{1,6}\s+/, '');
+                const sizeClass = level <= 2 ? 'text-lg' : level === 3 ? 'text-base' : 'text-sm';
+                const allowAddItem = headingItemPolicy[line.id];
+                return (
+                  <div key={line.id} className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-gray-400" />
+                    <span className={`font-semibold text-gray-900 dark:text-white ${sizeClass}`}>
+                      {headingText || line.text}
+                    </span>
+                    {allowAddItem && (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={isGenerating}
+                        onClick={() => addOutlineItem(index)}
+                        className="ml-auto bg-green-600 hover:bg-green-700 text-white focus:ring-green-500"
+                      >
+                        <Plus className="w-4 h-4 mr-1 text-white" />
+                        添加条目
+                      </Button>
+                    )}
+                  </div>
+                );
+              }
+
+              const item = parseOutlineItem(line.text);
+              if (item) {
+                return (
+                  <div key={line.id} className="flex flex-col md:flex-row gap-2">
+                    <input
+                      value={item.name}
+                      onChange={(e) =>
+                        handleOutlineItemChange(
+                          line.id,
+                          e.target.value,
+                          item.value,
+                          item.prefix,
+                          item.bold,
+                          item.separator,
+                          item.separatorSpace
+                        )
+                      }
+                      placeholder="条目"
+                      disabled={isGenerating}
+                      className="w-full md:w-24 flex-shrink-0 px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-200"
+                    />
+                    <div className="flex w-full gap-2">
+                      <textarea
+                        value={item.value}
+                        onChange={(e) =>
+                          handleOutlineItemChange(
+                            line.id,
+                            item.name,
+                            e.target.value,
+                            item.prefix,
+                            item.bold,
+                            item.separator,
+                            item.separatorSpace
+                          )
+                        }
+                        rows={3}
+                        disabled={isGenerating}
+                        className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-200 resize-y min-h-[96px]"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeOutlineItem(line.id)}
+                        disabled={isGenerating}
+                        className="h-9 px-2 text-red-600 hover:text-red-700"
+                        title="删除条目"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <textarea
+                  key={line.id}
+                  value={line.text}
+                  onChange={(e) => handleOutlineLineChange(line.id, e.target.value)}
+                  rows={3}
+                  disabled={isGenerating}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-200 resize-y min-h-[96px]"
+                />
+              );
+            })}
+            {isGenerating && <span className="animate-pulse text-2xl">▌</span>}
           </div>
         ) : (
           <div className="prose dark:prose-invert max-w-none prose-headings:text-gray-900 dark:prose-headings:text-white prose-p:text-gray-700 dark:prose-p:text-gray-300">

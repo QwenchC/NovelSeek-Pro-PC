@@ -56,6 +56,16 @@ pub struct CreateChapterInput {
     pub conflict: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateChapterMetaInput {
+    pub title: Option<String>,
+    pub order_index: Option<i32>,
+    pub outline_goal: Option<String>,
+    pub conflict: Option<String>,
+    pub twist: Option<String>,
+    pub cliffhanger: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Character {
     pub id: String,

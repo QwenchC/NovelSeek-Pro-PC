@@ -91,6 +91,7 @@ export function ProjectPage() {
   const [defaultCoverId, setDefaultCoverId] = useState<string | null>(null);
   const [coverGenerating, setCoverGenerating] = useState(false);
   const [coverError, setCoverError] = useState<string | null>(null);
+  const [isGeneratingPrologue, setIsGeneratingPrologue] = useState(false);
   const [coverConfig, setCoverConfig] = useState({
     model: 'zimage',
     style: '',
@@ -166,6 +167,28 @@ export function ProjectPage() {
   const loadChapters = async (projectId: string) => {
     try {
       const data = await chapterApi.getByProject(projectId);
+      const prologue = data.find(ch => ch.title.trim() === '序章');
+      if (prologue && prologue.order_index === 1) {
+        const toShift = data.filter(ch => ch.id !== prologue.id && ch.order_index > 1);
+        for (const chapter of toShift.sort((a, b) => a.order_index - b.order_index)) {
+          await chapterApi.updateMeta(chapter.id, { order_index: chapter.order_index - 1 });
+        }
+        await chapterApi.updateMeta(prologue.id, { order_index: 0 });
+        const refreshed = await chapterApi.getByProject(projectId);
+        setChapters(refreshed);
+        return;
+      }
+      if (!prologue && data.length > 0) {
+        const minOrder = Math.min(...data.map(ch => ch.order_index));
+        if (minOrder > 1) {
+          for (const chapter of data.sort((a, b) => a.order_index - b.order_index)) {
+            await chapterApi.updateMeta(chapter.id, { order_index: chapter.order_index - (minOrder - 1) });
+          }
+          const refreshed = await chapterApi.getByProject(projectId);
+          setChapters(refreshed);
+          return;
+        }
+      }
       setChapters(data);
     } catch (error) {
       console.error('Failed to load chapters:', error);
@@ -197,12 +220,19 @@ export function ProjectPage() {
   };
 
   const handleDeleteChapter = async (chapterId: string) => {
+    const target = chapters.find(ch => ch.id === chapterId);
     const confirmed = await confirmDialog('确定要删除这个章节吗？删除后无法恢复！', '删除章节');
     if (!confirmed) {
       return;
     }
     try {
       await chapterApi.delete(chapterId);
+      if (target && target.title.trim() === '序章' && target.order_index === 1) {
+        const toShift = chapters.filter(ch => ch.id !== chapterId && ch.order_index > 1);
+        for (const chapter of toShift.sort((a, b) => a.order_index - b.order_index)) {
+          await chapterApi.updateMeta(chapter.id, { order_index: chapter.order_index - 1 });
+        }
+      }
       if (id) loadChapters(id);
     } catch (error) {
       console.error('Failed to delete chapter:', error);
@@ -210,9 +240,61 @@ export function ProjectPage() {
     }
   };
 
+  const handleGeneratePrologue = async () => {
+    if (!currentProject) return;
+    if (!currentProject.description || !currentProject.description.trim()) {
+      alert('请先生成小说大纲');
+      return;
+    }
+    if (!deepseekKey) {
+      alert('请先在设置中配置 DeepSeek API 密钥');
+      return;
+    }
+    if (chapters.some(ch => ch.title.trim() === '序章')) {
+      alert('序章已存在');
+      return;
+    }
+
+    if (chapters.some(ch => ch.order_index === 0)) {
+      alert('\u5e8f\u7ae0\u5df2\u5b58\u5728');
+      return;
+    }
+    setIsGeneratingPrologue(true);
+    try {
+      const prologueChapter = await chapterApi.create({
+        project_id: currentProject.id,
+        title: '序章',
+        order_index: 0,
+        outline_goal: '序章',
+      });
+      await chapterApi.updateMeta(prologueChapter.id, {
+        title: '序章',
+        outline_goal: '序章',
+        order_index: 0,
+      });
+      await chapterApi.updateMeta(prologueChapter.id, {
+        title: '\u5e8f\u7ae0',
+        outline_goal: '\u5e8f\u7ae0',
+        order_index: 0,
+      });
+      await loadChapters(currentProject.id);
+      navigate(`/editor/${id}/${prologueChapter.id}?prologue=1`);
+      return;
+    } catch (error) {
+      const message = typeof error === 'string' ? error : (error as Error)?.message || '序章生成失败';
+      alert(message);
+    } finally {
+      setIsGeneratingPrologue(false);
+    }
+  };
+
   if (!currentProject) {
     return <div>加载中...</div>;
   }
+
+  const nextOrderIndex = chapters.length === 0
+    ? 1
+    : Math.max(...chapters.map(ch => ch.order_index)) + 1;
 
   const handleGenerateCover = async () => {
     if (!deepseekKey) {
@@ -335,7 +417,7 @@ export function ProjectPage() {
           <div className="flex flex-wrap gap-2 flex-shrink-0">
             <Button variant="outline" onClick={() => navigate(`/project/${id}/outline`)} className="whitespace-nowrap">
               <Sparkles className="w-4 h-4 mr-2" />
-              AI生成大纲
+              AI生成大纲&编辑
             </Button>
             <Button variant="outline" onClick={() => setShowCoverModal(true)} className="whitespace-nowrap">
               <Image className="w-4 h-4 mr-2" />
@@ -388,6 +470,15 @@ export function ProjectPage() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <h2 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white">章节列表</h2>
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={handleGeneratePrologue}
+              loading={isGeneratingPrologue}
+              className="whitespace-nowrap"
+            >
+              <Sparkles className="w-4 h-4 mr-1 md:mr-2" />
+              序章生成
+            </Button>
             <Button onClick={() => setShowCreateChapterModal(true)} className="whitespace-nowrap">
               <Plus className="w-4 h-4 mr-1 md:mr-2" />
               新建
@@ -437,7 +528,7 @@ export function ProjectPage() {
       {showCreateChapterModal && (
         <CreateChapterModal
           projectId={id!}
-          existingChaptersCount={chapters.length}
+          nextOrderIndex={nextOrderIndex}
           onClose={() => setShowCreateChapterModal(false)}
           onSuccess={() => {
             setShowCreateChapterModal(false);
@@ -650,7 +741,10 @@ function ChapterItem({ chapter, onClick, onDelete }: ChapterItemProps) {
   };
 
   // 处理章节目标的预览文字
+  const isPrologue = chapter.title.trim() === '序章' || chapter.order_index === 0;
+  const displayTitle = isPrologue ? '序章' : `第${chapter.order_index}章 - ${chapter.title}`;
   const goalPreview = chapter.outline_goal ? stripMarkdown(chapter.outline_goal) : '';
+  const previewText = isPrologue ? (chapter.final_text || chapter.draft_text || '') : goalPreview;
 
   return (
     <div
@@ -659,12 +753,13 @@ function ChapterItem({ chapter, onClick, onDelete }: ChapterItemProps) {
     >
       <div className="flex items-center justify-between">
         <div className="flex-1 min-w-0 mr-4">
-          <h3 className="font-medium text-gray-900 dark:text-white">
+          <h3 className="font-medium text-gray-900 dark:text-white text-transparent">
+            <span className="text-gray-900 dark:text-white">{displayTitle}</span>
             第{chapter.order_index}章 - {chapter.title}
           </h3>
-          {goalPreview && (
+          {(isPrologue || goalPreview) && (
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 truncate">
-              {goalPreview}
+              {previewText || '待生成'}
             </p>
           )}
         </div>
@@ -922,12 +1017,12 @@ function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps)
 // 新建章节模态框
 interface CreateChapterModalProps {
   projectId: string;
-  existingChaptersCount: number;
+  nextOrderIndex: number;
   onClose: () => void;
   onSuccess: () => void;
 }
 
-function CreateChapterModal({ projectId, existingChaptersCount, onClose, onSuccess }: CreateChapterModalProps) {
+function CreateChapterModal({ projectId, nextOrderIndex, onClose, onSuccess }: CreateChapterModalProps) {
   const [title, setTitle] = useState('');
   const [outlineGoal, setOutlineGoal] = useState('');
   const [loading, setLoading] = useState(false);
@@ -940,7 +1035,7 @@ function CreateChapterModal({ projectId, existingChaptersCount, onClose, onSucce
       await chapterApi.create({
         project_id: projectId,
         title,
-        order_index: existingChaptersCount + 1,
+        order_index: nextOrderIndex,
         outline_goal: outlineGoal || undefined,
       });
       onSuccess();

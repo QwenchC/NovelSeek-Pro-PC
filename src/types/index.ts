@@ -49,6 +49,15 @@ export interface CreateChapterInput {
   conflict?: string;
 }
 
+export interface UpdateChapterMetaInput {
+  title?: string;
+  order_index?: number;
+  outline_goal?: string;
+  conflict?: string;
+  twist?: string;
+  cliffhanger?: string;
+}
+
 export interface Character {
   id: string;
   project_id: string;

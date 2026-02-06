@@ -4,6 +4,7 @@ import type {
   CreateProjectInput,
   Chapter,
   CreateChapterInput,
+  UpdateChapterMetaInput,
   GenerateOutlineInput,
   GenerateChapterInput,
   GenerateImageInput,
@@ -25,6 +26,8 @@ export const chapterApi = {
   getByProject: (projectId: string) => invoke<Chapter[]>('get_chapters', { projectId }),
   update: (id: string, draftText?: string, finalText?: string, illustrations?: string) =>
     invoke<void>('update_chapter', { id, draftText, finalText, illustrations }),
+  updateMeta: (id: string, input: UpdateChapterMetaInput) =>
+    invoke<Chapter>('update_chapter_meta', { id, input }),
   delete: (id: string) => invoke<void>('delete_chapter', { id }),
 };
 

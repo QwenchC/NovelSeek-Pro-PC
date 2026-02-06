@@ -367,6 +367,52 @@ pub fn cancel_generation() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn generate_prologue_stream(
+    window: Window,
+    title: String,
+    genre: String,
+    outline: String,
+    #[allow(non_snake_case)] deepseekKey: String,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+
+    let client = Client::new();
+
+    let system_prompt = r#"你是一位资深小说作家与编剧，擅长创作序章/引子。
+你的目标是写出能够快速建立世界观与氛围、埋下核心伏笔的序章，且避免与第一章内容重复。"#;
+
+    let prompt = format!(
+        r#"请根据以下小说大纲创作【序章/引子】，要求：
+1. 重点营造世界观、氛围、悬念或伏笔。
+2. 不要复述或展开第一章的具体事件，不要推进到第一章的核心冲突。
+3. 可点出关键人物或势力，但不要完整揭示主线。
+4. 输出中文小说正文，不使用任何 Markdown。
+5. 字数约 800-1500 字。
+
+书名：{}
+题材：{}
+
+小说大纲：
+{}"#,
+        title, genre, outline
+    );
+
+    let content = stream_generate(
+        &client,
+        &window,
+        &deepseekKey,
+        system_prompt,
+        &prompt,
+        "chapter-stream",
+        2200,
+    )
+    .await?;
+
+    Ok(content)
+}
+
+#[tauri::command]
 pub async fn generate_chapter_stream(
     window: Window,
     #[allow(non_snake_case)] chapterTitle: String,

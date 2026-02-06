@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import { chapterApi } from '@services/api';
+import { chapterApi, projectApi } from '@services/api';
 import { Button } from '@components/Button';
 import { ArrowLeft, Save, Sparkles, StopCircle, Check, FileText, ChevronRight, RefreshCw, Image, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
@@ -52,6 +52,7 @@ function stripMarkdown(text: string): string {
 export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { deepseekKey, pollinationsKey, getCharacters, getWorldSetting, getTimeline, getPromo, setPromo } = useAppStore();
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
@@ -92,12 +93,21 @@ export function EditorPage() {
   });
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const autoPrologueRef = useRef(false);
 
   useEffect(() => {
     if (chapterId && projectId) {
       loadChapterData();
     }
   }, [chapterId, projectId]);
+
+  useEffect(() => {
+    const shouldAuto = searchParams.get('prologue') === '1';
+    if (shouldAuto && chapter && !autoPrologueRef.current && !isGenerating) {
+      autoPrologueRef.current = true;
+      handleGeneratePrologue();
+    }
+  }, [searchParams, chapter, isGenerating]);
 
   // 加载已保存的推文数据
   useEffect(() => {
@@ -332,6 +342,53 @@ export function EditorPage() {
   };
 
   // 生成章节推文（封面+摘要）
+  const handleGeneratePrologue = async () => {
+    if (!deepseekKey) {
+      setError('请先在设置页面配置 DeepSeek API 密钥');
+      return;
+    }
+
+    if (!projectId) {
+      setError('项目信息未加载');
+      return;
+    }
+
+    setError(null);
+    setIsGenerating(true);
+    setIsSaved(false);
+    setContent('');
+
+    let unlisten: (() => void) | null = null;
+
+    try {
+      unlisten = await listen<string>('chapter-stream', (event) => {
+        setContent(prev => prev + event.payload);
+      });
+
+      const project = await projectApi.getById(projectId);
+      if (!project?.description || !project.description.trim()) {
+        throw new Error('请先生成小说大纲');
+      }
+
+      await invoke<string>('generate_prologue_stream', {
+        title: project.title,
+        genre: project.genre || '未分类',
+        outline: project.description,
+        deepseekKey: deepseekKey,
+      });
+    } catch (err) {
+      const message = typeof err === 'string' ? err : (err as Error)?.message || '序章生成失败';
+      if (!message.includes('cancelled') && !message.includes('中断')) {
+        setError(message);
+      }
+    } finally {
+      if (unlisten) {
+        unlisten();
+      }
+      setIsGenerating(false);
+    }
+  };
+
   const handleGeneratePromo = async () => {
     if (!content || content.trim().length < 100) {
       setPromoError('章节内容太少，请先生成或编写更多内容（至少100字）');
@@ -530,6 +587,9 @@ export function EditorPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [content, chapterId]);
 
+  const isPrologue = chapter?.title.trim() === '序章' || chapter?.order_index === 0;
+  const headerTitle = chapter ? (isPrologue ? '序章' : `第${chapter.order_index}章 - ${chapter.title}`) : '章节编辑器';
+
   return (
     <div className="h-full flex flex-col">
       {/* 顶部工具栏 */}
@@ -540,12 +600,18 @@ export function EditorPage() {
             返回
           </Button>
           <div className="min-w-0">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white truncate">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white truncate text-transparent">
+              <span className="text-gray-900 dark:text-white">{headerTitle}</span>
               {chapter ? `第${chapter.order_index}章 - ${chapter.title}` : '章节编辑器'}
             </h2>
-            {chapter?.outline_goal && (
-              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 truncate max-w-md" title={chapter.outline_goal}>
-                {stripMarkdown(chapter.outline_goal).replace(/^目标[：:]\s*/i, '目标：')}
+            {(isPrologue || chapter?.outline_goal) && (
+              <p
+                className="text-sm text-gray-500 dark:text-gray-400 mt-1 truncate max-w-md"
+                title={isPrologue ? (chapter?.final_text || chapter?.draft_text || '') : chapter?.outline_goal}
+              >
+                {isPrologue
+                  ? stripMarkdown(chapter?.final_text || chapter?.draft_text || '') || '待生成'
+                  : stripMarkdown(chapter?.outline_goal || '').replace(/^目标[：:]\s*/i, '目标：')}
               </p>
             )}
           </div>

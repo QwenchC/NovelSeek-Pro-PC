@@ -140,6 +140,40 @@ impl GenerationService {
         Ok(content)
     }
 
+    pub async fn generate_prologue(
+        &self,
+        title: &str,
+        genre: &str,
+        outline: &str,
+    ) -> Result<String> {
+        let client = self.deepseek.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("DeepSeek not configured"))?;
+
+        let prompt = format!(
+            r#"请根据以下小说大纲生成一篇序章（引子），要求：
+1. 与整体故事风格一致，能快速建立世界观与氛围
+2. 为后续主线埋下伏笔或引出核心冲突
+3. 输出中文小说正文，不使用任何 Markdown
+4. 字数约 800-1500 字
+
+书名：{}
+题材：{}
+
+小说大纲：
+{}"#,
+            title, genre, outline
+        );
+
+        let params = GenerationParams {
+            temperature: Some(0.7),
+            max_tokens: Some(2000),
+            system_prompt: Some(deepseek_prompts::chapter_system_prompt()),
+        };
+
+        let (content, _) = client.generate_text(&prompt, Some(params)).await?;
+        Ok(content)
+    }
+
     pub async fn generate_revision(&self, original_text: &str, revision_goals: &str) -> Result<String> {
         let client = self.deepseek.as_ref()
             .ok_or_else(|| anyhow::anyhow!("DeepSeek not configured"))?;

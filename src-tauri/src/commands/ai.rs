@@ -29,6 +29,14 @@ pub struct GenerateImageInput {
     pub pollinations_key: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GeneratePrologueInput {
+    pub title: String,
+    pub genre: String,
+    pub outline: String,
+    pub deepseek_key: String,
+}
+
 #[tauri::command]
 pub async fn generate_outline(input: GenerateOutlineInput) -> Result<String, String> {
     let service = GenerationService::new(Some(input.deepseek_key), None);
@@ -62,6 +70,16 @@ pub async fn generate_image(input: GenerateImageInput) -> Result<String, String>
     
     service
         .generate_image(input.params, &input.save_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn generate_prologue(input: GeneratePrologueInput) -> Result<String, String> {
+    let service = GenerationService::new(Some(input.deepseek_key), None);
+    
+    service
+        .generate_prologue(&input.title, &input.genre, &input.outline)
         .await
         .map_err(|e| e.to_string())
 }

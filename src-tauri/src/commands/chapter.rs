@@ -1,6 +1,6 @@
 use tauri::State;
 use sqlx::SqlitePool;
-use crate::models::{Chapter, CreateChapterInput};
+use crate::models::{Chapter, CreateChapterInput, UpdateChapterMetaInput};
 use crate::services::ChapterService;
 
 #[tauri::command]
@@ -32,6 +32,17 @@ pub async fn update_chapter(
     illustrations: Option<String>,
 ) -> Result<(), String> {
     ChapterService::update_text(&pool, &id, draft_text, final_text, illustrations)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_chapter_meta(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    input: UpdateChapterMetaInput,
+) -> Result<Chapter, String> {
+    ChapterService::update_meta(&pool, &id, input)
         .await
         .map_err(|e| e.to_string())
 }

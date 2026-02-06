@@ -2,7 +2,7 @@ use sqlx::SqlitePool;
 use chrono::Utc;
 use uuid::Uuid;
 use anyhow::Result;
-use crate::models::{Chapter, CreateChapterInput};
+use crate::models::{Chapter, CreateChapterInput, UpdateChapterMetaInput};
 
 pub struct ChapterService;
 
@@ -140,6 +140,41 @@ impl ChapterService {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn update_meta(
+        pool: &SqlitePool,
+        id: &str,
+        input: UpdateChapterMetaInput,
+    ) -> Result<Chapter> {
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            r#"
+            UPDATE chapters
+            SET title = COALESCE(?, title),
+                order_index = COALESCE(?, order_index),
+                outline_goal = COALESCE(?, outline_goal),
+                conflict = COALESCE(?, conflict),
+                twist = COALESCE(?, twist),
+                cliffhanger = COALESCE(?, cliffhanger),
+                updated_at = ?
+            WHERE id = ?
+            "#
+        )
+        .bind(input.title)
+        .bind(input.order_index)
+        .bind(input.outline_goal)
+        .bind(input.conflict)
+        .bind(input.twist)
+        .bind(input.cliffhanger)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+        Self::get_by_id(pool, id).await?
+            .ok_or_else(|| anyhow::anyhow!("Chapter not found after update"))
     }
 
     /// 仅更新项目总字数（不修改 updated_at）
