@@ -112,6 +112,12 @@ export interface GenerateChapterInput {
   deepseek_key: string;
 }
 
+export interface GenerateRevisionInput {
+  text: string;
+  goals?: string;
+  deepseek_key: string;
+}
+
 export interface ImageGenerationParams {
   prompt: string;
   width?: number;

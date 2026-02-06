@@ -7,6 +7,7 @@ import type {
   UpdateChapterMetaInput,
   GenerateOutlineInput,
   GenerateChapterInput,
+  GenerateRevisionInput,
   GenerateImageInput,
 } from '@typings/index';
 
@@ -37,6 +38,8 @@ export const aiApi = {
     invoke<string>('generate_outline', { input }),
   generateChapter: (input: GenerateChapterInput) =>
     invoke<string>('generate_chapter', { input }),
+  generateRevision: (input: GenerateRevisionInput) =>
+    invoke<string>('generate_revision', { input }),
   generateImage: (input: GenerateImageInput) => invoke<string>('generate_image', { input }),
   testDeepSeek: (apiKey: string) => invoke<boolean>('test_deepseek_connection', { apiKey }),
   testPollinations: (apiKey?: string) =>

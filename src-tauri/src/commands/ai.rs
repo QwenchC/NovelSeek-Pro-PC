@@ -37,6 +37,13 @@ pub struct GeneratePrologueInput {
     pub deepseek_key: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenerateRevisionInput {
+    pub text: String,
+    pub goals: Option<String>,
+    pub deepseek_key: String,
+}
+
 #[tauri::command]
 pub async fn generate_outline(input: GenerateOutlineInput) -> Result<String, String> {
     let service = GenerationService::new(Some(input.deepseek_key), None);
@@ -80,6 +87,19 @@ pub async fn generate_prologue(input: GeneratePrologueInput) -> Result<String, S
     
     service
         .generate_prologue(&input.title, &input.genre, &input.outline)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn generate_revision(input: GenerateRevisionInput) -> Result<String, String> {
+    let service = GenerationService::new(Some(input.deepseek_key), None);
+    let goals = input
+        .goals
+        .unwrap_or_else(|| "润色并保持原意，使表达更自然流畅".to_string());
+
+    service
+        .generate_revision(&input.text, &goals)
         .await
         .map_err(|e| e.to_string())
 }

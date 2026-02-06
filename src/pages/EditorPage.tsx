@@ -63,6 +63,13 @@ export function EditorPage() {
   const [isSaved, setIsSaved] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [wordCount, setWordCount] = useState(0);
+  const [revisionSelection, setRevisionSelection] = useState<{
+    start: number;
+    end: number;
+    text: string;
+  } | null>(null);
+  const [revisionButtonPos, setRevisionButtonPos] = useState<{ x: number; y: number } | null>(null);
+  const [isRevising, setIsRevising] = useState(false);
   
   // 推文相关状态
   const [promoResult, setPromoResult] = useState<PromoResult | null>(null);
@@ -93,6 +100,7 @@ export function EditorPage() {
   });
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
   const autoPrologueRef = useRef(false);
 
   useEffect(() => {
@@ -262,6 +270,143 @@ export function EditorPage() {
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setContent(e.target.value);
     setIsSaved(false);
+    setRevisionSelection(null);
+    setRevisionButtonPos(null);
+  };
+
+  const getCaretClientPosition = (textarea: HTMLTextAreaElement, position: number) => {
+    const div = document.createElement('div');
+    const style = window.getComputedStyle(textarea);
+    const properties = [
+      'direction',
+      'box-sizing',
+      'width',
+      'height',
+      'overflow-x',
+      'overflow-y',
+      'border-top-width',
+      'border-right-width',
+      'border-bottom-width',
+      'border-left-width',
+      'padding-top',
+      'padding-right',
+      'padding-bottom',
+      'padding-left',
+      'font-style',
+      'font-variant',
+      'font-weight',
+      'font-stretch',
+      'font-size',
+      'line-height',
+      'font-family',
+      'text-align',
+      'text-transform',
+      'text-indent',
+      'text-decoration',
+      'letter-spacing',
+      'word-spacing',
+      'tab-size',
+      '-moz-tab-size',
+    ];
+
+    properties.forEach(prop => {
+      const value = style.getPropertyValue(prop);
+      if (value) {
+        div.style.setProperty(prop, value);
+      }
+    });
+
+    div.style.position = 'absolute';
+    div.style.visibility = 'hidden';
+    div.style.whiteSpace = 'pre-wrap';
+    div.style.wordWrap = 'break-word';
+    div.style.top = '0';
+    div.style.left = '-9999px';
+
+    div.textContent = textarea.value.substring(0, position);
+    const span = document.createElement('span');
+    span.textContent = textarea.value.substring(position) || '.';
+    div.appendChild(span);
+    document.body.appendChild(div);
+
+    const rect = span.getBoundingClientRect();
+    const divRect = div.getBoundingClientRect();
+    const top = rect.top - divRect.top;
+    const left = rect.left - divRect.left;
+
+    document.body.removeChild(div);
+
+    const textareaRect = textarea.getBoundingClientRect();
+    return {
+      left: textareaRect.left + left - textarea.scrollLeft,
+      top: textareaRect.top + top - textarea.scrollTop,
+      height: rect.height || parseFloat(style.lineHeight) || 16,
+    };
+  };
+
+  const updateRevisionSelection = () => {
+    const textarea = textareaRef.current;
+    const container = editorContainerRef.current;
+    if (!textarea || !container) return;
+
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    if (start === end) {
+      setRevisionSelection(null);
+      setRevisionButtonPos(null);
+      return;
+    }
+
+    const selectedText = textarea.value.slice(start, end);
+    if (!selectedText.trim()) {
+      setRevisionSelection(null);
+      setRevisionButtonPos(null);
+      return;
+    }
+
+    const caret = getCaretClientPosition(textarea, end);
+    const containerRect = container.getBoundingClientRect();
+    const x = Math.min(Math.max(caret.left - containerRect.left, 8), containerRect.width - 40);
+    const y = Math.min(Math.max(caret.top - containerRect.top - 36, 8), containerRect.height - 40);
+
+    setRevisionSelection({ start, end, text: selectedText });
+    setRevisionButtonPos({ x, y });
+  };
+
+  const handlePolishSelection = async () => {
+    if (!revisionSelection) return;
+    if (!deepseekKey) {
+      setError('请先在设置页面配置 DeepSeek API 密钥');
+      return;
+    }
+    setIsRevising(true);
+    const { start, end, text } = revisionSelection;
+    try {
+      const revised = await invoke<string>('generate_revision', {
+        input: {
+          text,
+          goals: '润色并保持原意，使表达更自然流畅',
+          deepseek_key: deepseekKey,
+        },
+      });
+
+      setContent(prev => prev.slice(0, start) + revised + prev.slice(end));
+      setIsSaved(false);
+      setRevisionSelection(null);
+      setRevisionButtonPos(null);
+
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return;
+        const nextPos = start + revised.length;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(nextPos, nextPos);
+      });
+    } catch (err) {
+      const message = typeof err === 'string' ? err : (err as Error)?.message || '润色失败';
+      setError(message);
+    } finally {
+      setIsRevising(false);
+    }
   };
 
   // 生成新内容（从头或续写）
@@ -799,11 +944,39 @@ export function EditorPage() {
           )}
 
           {/* 编辑区域 */}
-          <div className="flex-1 min-h-0 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div
+            ref={editorContainerRef}
+            className="flex-1 min-h-0 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden relative"
+          >
+            {revisionSelection && revisionButtonPos && (
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handlePolishSelection}
+                disabled={isRevising}
+                className="absolute z-10 w-8 h-8 rounded-full bg-primary-600 hover:bg-primary-700 text-white flex items-center justify-center shadow-md"
+                style={{ left: revisionButtonPos.x, top: revisionButtonPos.y }}
+                title="润色选中内容"
+              >
+                {isRevising ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              </button>
+            )}
             <textarea
               ref={textareaRef}
               value={content}
               onChange={handleContentChange}
+              onMouseUp={updateRevisionSelection}
+              onKeyUp={updateRevisionSelection}
+              onSelect={updateRevisionSelection}
+              onScroll={() => {
+                if (revisionSelection) {
+                  updateRevisionSelection();
+                }
+              }}
+              onBlur={() => {
+                setRevisionSelection(null);
+                setRevisionButtonPos(null);
+              }}
               className="w-full h-full resize-none border-none focus:outline-none dark:bg-gray-800 dark:text-white p-6 font-serif text-lg leading-relaxed"
               placeholder="在这里开始写作...
 
