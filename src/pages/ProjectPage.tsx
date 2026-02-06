@@ -7,6 +7,7 @@ import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2,
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Chapter, Project } from '@typings/index';
+import { confirmDialog } from '@utils/index';
 
 interface CoverImageItem {
   id: string;
@@ -196,7 +197,8 @@ export function ProjectPage() {
   };
 
   const handleDeleteChapter = async (chapterId: string) => {
-    if (!confirm('确定要删除这个章节吗？删除后无法恢复！')) {
+    const confirmed = await confirmDialog('确定要删除这个章节吗？删除后无法恢复！', '删除章节');
+    if (!confirmed) {
       return;
     }
     try {
@@ -293,7 +295,8 @@ export function ProjectPage() {
   const handleDeleteCover = async () => {
     const currentCover = coverImages[coverIndex];
     if (!currentCover) return;
-    if (!confirm('确定删除该封面吗？')) return;
+    const confirmed = await confirmDialog('确定删除该封面吗？', '删除封面');
+    if (!confirmed) return;
     const nextCovers = coverImages.filter((_, idx) => idx !== coverIndex);
     let nextDefaultId = defaultCoverId;
     if (currentCover.id === defaultCoverId) {

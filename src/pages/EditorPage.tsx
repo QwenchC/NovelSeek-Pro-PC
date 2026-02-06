@@ -7,6 +7,7 @@ import { ArrowLeft, Save, Sparkles, StopCircle, Check, FileText, ChevronRight, R
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import type { Chapter } from '@typings/index';
+import { confirmDialog } from '@utils/index';
 
 // 单次生成的目标字数（控制在2500字左右避免中断）
 const TARGET_WORDS_PER_GENERATION = 2500;
@@ -416,6 +417,21 @@ export function EditorPage() {
       prev.map(item => (item.id === id ? { ...item, anchorIndex: clamped } : item))
     );
     setAnchorEdits(prev => ({ ...prev, [id]: String(clamped) }));
+    setIsSaved(false);
+  };
+
+  const handleDeleteIllustration = async (id: string) => {
+    const confirmed = await confirmDialog('确定删除这张插图吗？', '删除插图');
+    if (!confirmed) return;
+    setIllustrations(prev => prev.filter(item => item.id !== id));
+    setAnchorEdits(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (activeIllustrationId === id) {
+      setActiveIllustrationId(null);
+    }
     setIsSaved(false);
   };
 
@@ -854,6 +870,14 @@ export function EditorPage() {
                                   onClick={() => applyAnchorChange(item.id)}
                                 >
                                   移动
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleDeleteIllustration(item.id)}
+                                  className="text-red-600 hover:text-red-700"
+                                >
+                                  删除
                                 </Button>
                               </div>
                             </div>

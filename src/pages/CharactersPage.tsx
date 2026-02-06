@@ -4,6 +4,7 @@ import { useAppStore, Character } from '@store/index';
 import { projectApi } from '@services/api';
 import { Button } from '@components/Button';
 import { ArrowLeft, Plus, Edit, Trash2, User, Save, Star } from 'lucide-react';
+import { confirmDialog } from '@utils/index';
 
 export function CharactersPage() {
   const { id: projectId } = useParams<{ id: string }>();
@@ -168,8 +169,9 @@ export function CharactersPage() {
     setHasChanges(true);
   };
 
-  const handleDeleteCharacter = (charId: string) => {
-    if (confirm('确定要删除这个角色吗？')) {
+  const handleDeleteCharacter = async (charId: string) => {
+    const confirmed = await confirmDialog('确定要删除这个角色吗？', '删除角色');
+    if (confirmed) {
       setCharacters(prev => prev.filter(c => c.id !== charId));
       setHasChanges(true);
     }

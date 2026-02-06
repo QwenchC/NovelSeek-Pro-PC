@@ -4,7 +4,7 @@ import { useAppStore } from '@store/index';
 import { projectApi } from '@services/api';
 import { Button } from '@components/Button';
 import { Plus, BookOpen, Calendar, TrendingUp, Trash2 } from 'lucide-react';
-import { formatDate, formatWordCount, calculateProgress } from '@utils/index';
+import { formatDate, formatWordCount, calculateProgress, confirmDialog } from '@utils/index';
 import type { Project } from '@typings/index';
 
 export function HomePage() {
@@ -46,7 +46,8 @@ export function HomePage() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    if (!confirm('确定要删除这个项目吗？删除后无法恢复！')) {
+    const confirmed = await confirmDialog('确定要删除这个项目吗？删除后无法恢复！', '删除项目');
+    if (!confirmed) {
       return;
     }
     try {
@@ -96,7 +97,7 @@ export function HomePage() {
           </Button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {projects.map((project) => (
             <ProjectCard
               key={project.id}
@@ -144,6 +145,45 @@ function ProjectCard({ project, onClick, onDelete }: ProjectCardProps) {
     ? calculateProgress(project.current_word_count, project.target_word_count)
     : 0;
 
+  const getDefaultCoverSrc = (proj: Project): string | null => {
+    if (!proj.cover_images) return null;
+    try {
+      const parsed = JSON.parse(proj.cover_images);
+      if (!Array.isArray(parsed)) return null;
+
+      const items = parsed
+        .map((item, index) => {
+          if (typeof item === 'string') {
+            return { id: `idx-${index}`, imageBase64: item };
+          }
+          if (item && typeof item === 'object') {
+            const rawItem = item as Record<string, unknown>;
+            const imageBase64 =
+              (rawItem.imageBase64 as string | undefined) ||
+              (rawItem.image_base64 as string | undefined) ||
+              (rawItem.image as string | undefined) ||
+              (rawItem.base64 as string | undefined);
+            if (!imageBase64 || typeof imageBase64 !== 'string') return null;
+            return {
+              id: typeof rawItem.id === 'string' && rawItem.id ? rawItem.id : `idx-${index}`,
+              imageBase64,
+            };
+          }
+          return null;
+        })
+        .filter((item): item is { id: string; imageBase64: string } => Boolean(item));
+
+      if (!items.length) return null;
+      const defaultId = proj.default_cover_id;
+      const matched = defaultId ? items.find((item) => item.id === defaultId) : null;
+      return matched?.imageBase64 || items[0].imageBase64;
+    } catch {
+      return null;
+    }
+  };
+
+  const coverSrc = getDefaultCoverSrc(project);
+
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
     onDelete();
@@ -166,45 +206,68 @@ function ProjectCard({ project, onClick, onDelete }: ProjectCardProps) {
         <Trash2 className="w-4 h-4" />
       </button>
 
-      <div className="flex items-start justify-between mb-4 pr-8">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white line-clamp-2">
-          {project.title}
-        </h3>
-        {project.genre && (
-          <span className="ml-2 px-2 py-1 text-xs font-medium rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/30 dark:text-primary-400 flex-shrink-0">
-            {project.genre}
-          </span>
-        )}
-      </div>
-
-      {outlinePreview && (
-        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 line-clamp-2">
-          {outlinePreview}
-        </p>
-      )}
-
-      <div className="space-y-2 mb-4">
-        <div className="flex items-center text-sm text-gray-600 dark:text-gray-400">
-          <TrendingUp className="w-4 h-4 mr-2" />
-          <span>
-            {formatWordCount(project.current_word_count)}
-            {project.target_word_count && ` / ${formatWordCount(project.target_word_count)}`}
-          </span>
-        </div>
-        <div className="flex items-center text-sm text-gray-600 dark:text-gray-400">
-          <Calendar className="w-4 h-4 mr-2" />
-          <span>{formatDate(project.updated_at)}</span>
-        </div>
-      </div>
-
-      {project.target_word_count && (
-        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+      <div className="flex gap-4">
+        <div className="flex-shrink-0">
           <div
-            className="bg-primary-600 h-2 rounded-full transition-all"
-            style={{ width: `${progress}%` }}
-          />
+            className="rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600"
+            style={{ width: 108, height: 192 }}
+          >
+            {coverSrc ? (
+              <img
+                src={coverSrc}
+                alt="封面预览"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
+                暂无封面
+              </div>
+            )}
+          </div>
         </div>
-      )}
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between mb-4 pr-8">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white line-clamp-2">
+              {project.title}
+            </h3>
+            {project.genre && (
+              <span className="ml-2 px-2 py-1 text-xs font-medium rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/30 dark:text-primary-400 flex-shrink-0">
+                {project.genre}
+              </span>
+            )}
+          </div>
+
+          {outlinePreview && (
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 line-clamp-2">
+              {outlinePreview}
+            </p>
+          )}
+
+          <div className="space-y-2 mb-4">
+            <div className="flex items-center text-sm text-gray-600 dark:text-gray-400">
+              <TrendingUp className="w-4 h-4 mr-2" />
+              <span>
+                {formatWordCount(project.current_word_count)}
+                {project.target_word_count && ` / ${formatWordCount(project.target_word_count)}`}
+              </span>
+            </div>
+            <div className="flex items-center text-sm text-gray-600 dark:text-gray-400">
+              <Calendar className="w-4 h-4 mr-2" />
+              <span>{formatDate(project.updated_at)}</span>
+            </div>
+          </div>
+
+          {project.target_word_count && (
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+              <div
+                className="bg-primary-600 h-2 rounded-full transition-all"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -51,3 +51,12 @@ export function debounce<T extends (...args: any[]) => any>(
     timeout = setTimeout(later, wait);
   };
 }
+
+export async function confirmDialog(message: string, title = '确认'): Promise<boolean> {
+  try {
+    const { confirm } = await import('@tauri-apps/api/dialog');
+    return await confirm(message, { title, type: 'warning' });
+  } catch {
+    return window.confirm(message);
+  }
+}
