@@ -1,105 +1,63 @@
-﻿# NovelSeek Pro PC
+# NovelSeek Pro PC
 
-<div align="center">
+NovelSeek Pro PC 是一个面向中文长篇创作的桌面端小说工作台，覆盖从大纲设计、章节生成、插图与封面、到 PDF 电子书导出的完整流程。  
+技术架构采用 `Tauri + React + TypeScript + Rust + SQLite`，在本地运行并持久化项目数据。
 
-**AI 驱动的小说创作与出版桌面工具（Tauri + React + Rust）**
+## 版本信息
 
-[![Tauri](https://img.shields.io/badge/Tauri-1.5-blue)](https://tauri.app)
-[![React](https://img.shields.io/badge/React-18-blue)](https://reactjs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue)](https://www.typescriptlang.org)
-[![Rust](https://img.shields.io/badge/Rust-1.75-orange)](https://www.rust-lang.org)
+- 当前版本：`v1.1.1`
+- 平台：Windows（当前已验证）
+- 形态：桌面客户端（Tauri）
 
-</div>
+## 主要能力
 
-## 项目简介
+### 1. 项目与章节管理
+- 小说项目创建、编辑、删除
+- 章节列表管理（含序章）
+- 首页项目卡片封面预览
+- 章节编辑页内快速切换章节（标题点击展开章节列表）
 
-NovelSeek Pro PC 面向长篇小说创作全流程，提供从项目管理、AI 大纲与章节生成、插图与封面生成，到电子书导出的完整工作流。
+### 2. AI 文本生成（DeepSeek）
+- AI 生成小说大纲
+- 大纲结构化编辑（锁定标题层级，条目可增删改）
+- 序章流式生成
+- 正文章节流式生成与续写
+- 选中文本就地润色
 
-前端基于 React + TypeScript，后端基于 Tauri + Rust + SQLite，支持本地桌面运行与持久化数据管理。
+### 3. AI 图像生成（Pollinations）
+- 章节推文图（章节摘要 + 封面图）
+- 段落插图模式（多段勾选生成、锚点定位、移动与删除）
+- 全书封面生成（生成、预览翻页、重命名、删除、设为默认）
 
-## 核心功能
-
-### 1) 小说项目与章节管理
-- 项目创建、编辑、删除
-- 章节列表与章节预览
-- 序章与正文章节并行管理
-- 角色页与大纲页联动
-
-### 2) AI 生成与润色（DeepSeek）
-- AI 生成大纲（含后续可编辑）
-- 序章生成（流式输出）
-- 章节生成 / 续写（流式输出）
-- 编辑器选中文本一键润色
-
-### 3) AI 图像能力（Pollinations）
-- 段落插图生成：按段落锚点生成/展示/调整
-- 章节推文图生成
-- 全书封面生成：预览、翻页、重命名、删除、设为默认封面
-
-### 4) 大纲编辑与格式安全
-- 标题级结构锁定，正文内容可编辑
-- 支持不同 Markdown item 风格
-- 条目新增/删除（在允许的层级）
-- 保存后同步章节预览信息与后续生成上下文
-
-### 5) 电子书导出（重点）
-- 入口：章节列表页「导出电子书」
-- 当前支持：PDF（A4）
-- 导出内容开关：小说封面 / 章节封面 / 段落插图
-- 导出预览支持逐张删除段落插图
-- 导出页编辑进度持久化（字体选择、内容开关、已删插图）
-
-## v1.1.0 重点更新（PDF 导出机制）
-
-- PDF 由“整页截图导出”升级为“文本排版导出”
-  - 正文文字可复制、可检索
-- 新增目录页与页码机制
-  - 目录含章节跳转链接
-  - 页码从目录页开始计数
-- 封面页与目录/正文顺序优化
-  - 封面（书名/作者/封面图）独立页，目录在其后
-- 系统中文字体导出
-  - 导出页读取系统字体列表并嵌入所选字体
-  - 若个别字体兼容性不足，可切换字体重试
-- 中文排版优化
-  - 段落换行优化，避免标点落在行首
-  - 章节摘要、封面、正文、插图间距可读性提升
-
-## 技术栈
-
-### 前端
-- React 18
-- TypeScript
-- Zustand
-- Tailwind CSS
-- jsPDF
-
-### 后端（Tauri）
-- Rust
-- Tauri 1.5
-- SQLx + SQLite
-- Reqwest
+### 4. 电子书导出（PDF）
+- 章节列表页一键进入导出界面
+- 导出开关：小说封面 / 章节封面 / 段落插图
+- 常驻导出预览，可删除个别段落插图
+- 导出编辑进度持久化（再次进入保留上次选择）
+- A4 页面、目录、页码、真实文本排版（非截图）
+- 中文字体支持（可从系统字体列表选择）
 
 ## 快速开始
 
-### 环境要求
-- Node.js >= 18
-- Rust >= 1.75
+## 环境要求
+
+- Node.js `>=18`
+- Rust `>=1.75`
 - npm
 
-### 安装依赖
+## 安装依赖
 
 ```bash
 npm install
 ```
 
-### 开发运行
+## 开发运行
 
 ```bash
 npm run tauri:dev
 ```
 
-### 生产构建
+## 生产构建
 
 ```bash
 npm run tauri:build
@@ -110,31 +68,31 @@ npm run tauri:build
 - `src-tauri/target/release/bundle/msi/`
 - `src-tauri/target/release/bundle/nsis/`
 
-## 配置说明
+## API 配置
 
-在应用「设置」页面配置 API Key：
+在应用“设置”页面配置以下 Key：
 
-- DeepSeek API Key（文本生成/润色）
-- Pollinations API Key（图像生成）
+- `DeepSeek API Key`：用于大纲、章节、润色、提示词生成
+- `Pollinations API Key`：用于封面与插图生图
 
 ## 项目结构
 
 ```text
 NovelSeek-Pro-PC/
 ├─ src/
-│  ├─ components/       # 通用 UI 组件
-│  ├─ pages/            # 页面（首页/项目页/大纲页/编辑页/导出页）
-│  ├─ services/         # 前端 API 调用封装
-│  ├─ store/            # Zustand 状态
-│  ├─ types/            # TS 类型
-│  └─ utils/            # 工具函数
+│  ├─ components/      # 通用组件
+│  ├─ pages/           # 页面（首页/项目页/大纲页/编辑页/导出页）
+│  ├─ services/        # 前端 API 封装
+│  ├─ store/           # Zustand 状态
+│  ├─ types/           # TypeScript 类型
+│  └─ utils/           # 工具函数
 ├─ src-tauri/
 │  ├─ src/
-│  │  ├─ api/           # 第三方 API 封装
-│  │  ├─ commands/      # Tauri 命令层
-│  │  ├─ db/            # 数据库初始化与迁移
-│  │  ├─ services/      # 业务服务
-│  │  └─ models.rs      # Rust 模型
+│  │  ├─ api/          # DeepSeek / Pollinations 调用层
+│  │  ├─ commands/     # Tauri 命令入口
+│  │  ├─ db/           # SQLite 初始化与迁移
+│  │  ├─ services/     # 业务服务
+│  │  └─ models.rs     # Rust 模型
 │  └─ tauri.conf.json
 ├─ package.json
 └─ README.md
@@ -142,12 +100,14 @@ NovelSeek-Pro-PC/
 
 ## 常见问题
 
-### 1) PDF 中文显示异常怎么办？
-在导出页切换系统字体后重试。不同字体对 PDF 嵌入兼容性有差异。
+### PDF 中文不显示怎么办？
 
-### 2) 导出页删除过的插图为什么会恢复？
-当前版本已支持导出页进度持久化；若项目内容结构发生变化，会自动清理失效插图记录。
+优先在导出页面切换其他中文字体后重试。不同系统字体的嵌入兼容性存在差异。
 
-## 许可
+### 为什么导出预览里删过的插图还在？
 
-MIT License
+当前版本已支持导出页面进度持久化。若章节内容结构变化较大，系统会按当前内容重新校准可用插图。
+
+## License
+
+MIT

@@ -86,6 +86,7 @@ export function EditorPage() {
   const [isGeneratingIllustration, setIsGeneratingIllustration] = useState(false);
   const [anchorEdits, setAnchorEdits] = useState<Record<string, string>>({});
   const [showIllustrationConfig, setShowIllustrationConfig] = useState(false);
+  const [showChapterSwitcher, setShowChapterSwitcher] = useState(false);
   const [illustrationConfig, setIllustrationConfig] = useState<IllustrationConfig>({
     model: 'zimage',
     width: 1920,
@@ -101,6 +102,7 @@ export function EditorPage() {
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const chapterSwitcherRef = useRef<HTMLDivElement>(null);
   const autoPrologueRef = useRef(false);
 
   useEffect(() => {
@@ -167,6 +169,17 @@ export function EditorPage() {
   const selectedIndices = useMemo(
     () => Array.from(selectedParagraphs).sort((a, b) => a - b),
     [selectedParagraphs]
+  );
+
+  const sortedChapters = useMemo(
+    () =>
+      [...allChapters].sort((a, b) => {
+        if (a.order_index !== b.order_index) {
+          return a.order_index - b.order_index;
+        }
+        return a.created_at.localeCompare(b.created_at);
+      }),
+    [allChapters]
   );
 
   const illustrationsByAnchor = useMemo(() => {
@@ -719,6 +732,58 @@ export function EditorPage() {
     await generateIllustrationWithConfig(config);
   };
 
+  const getChapterDisplayTitle = (targetChapter: Chapter): string => {
+    const targetIsPrologue = targetChapter.title.trim() === '序章' || targetChapter.order_index === 0;
+    return targetIsPrologue ? '序章' : `第${targetChapter.order_index}章 - ${targetChapter.title}`;
+  };
+
+  const handleSwitchChapter = async (targetChapter: Chapter) => {
+    if (!projectId || !targetChapter.id) return;
+
+    if (targetChapter.id === chapterId) {
+      setShowChapterSwitcher(false);
+      return;
+    }
+
+    if (!isSaved) {
+      const confirmed = await confirmDialog('当前有未保存内容，切换章节会丢失修改，确定继续吗？', '未保存内容');
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setShowChapterSwitcher(false);
+    navigate(`/editor/${projectId}/${targetChapter.id}`);
+  };
+
+  useEffect(() => {
+    setShowChapterSwitcher(false);
+  }, [chapterId]);
+
+  useEffect(() => {
+    if (!showChapterSwitcher) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!chapterSwitcherRef.current) return;
+      if (!chapterSwitcherRef.current.contains(event.target as Node)) {
+        setShowChapterSwitcher(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowChapterSwitcher(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [showChapterSwitcher]);
+
   // 快捷键支持
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -744,11 +809,49 @@ export function EditorPage() {
             <ArrowLeft className="w-4 h-4 mr-2" />
             返回
           </Button>
-          <div className="min-w-0">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white truncate text-transparent">
-              <span className="text-gray-900 dark:text-white">{headerTitle}</span>
-              {chapter ? `第${chapter.order_index}章 - ${chapter.title}` : '章节编辑器'}
+          <div ref={chapterSwitcherRef} className="min-w-0 relative">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white truncate">
+              <button
+                type="button"
+                onClick={() => setShowChapterSwitcher(prev => !prev)}
+                className="inline-flex max-w-full items-center gap-1.5 text-left text-gray-900 dark:text-white hover:text-primary-600 dark:hover:text-primary-300 transition-colors"
+                title="点击切换章节"
+              >
+                <span className="truncate">{headerTitle}</span>
+                {showChapterSwitcher ? (
+                  <ChevronUp className="w-4 h-4 flex-shrink-0" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 flex-shrink-0" />
+                )}
+              </button>
             </h2>
+            {showChapterSwitcher && sortedChapters.length > 0 && (
+              <div className="absolute left-0 top-full z-30 mt-2 w-[min(90vw,30rem)] max-h-80 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg">
+                {sortedChapters.map(item => {
+                  const itemIsPrologue = item.title.trim() === '序章' || item.order_index === 0;
+                  const isCurrent = item.id === chapterId;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => void handleSwitchChapter(item)}
+                      className={`w-full px-3 py-2 text-left border-b last:border-b-0 border-gray-100 dark:border-gray-700 transition-colors ${
+                        isCurrent
+                          ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                          : 'text-gray-700 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/40'
+                      }`}
+                    >
+                      <p className="text-sm font-medium truncate">{getChapterDisplayTitle(item)}</p>
+                      {!itemIsPrologue && item.outline_goal && (
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">
+                          {stripMarkdown(item.outline_goal).replace(/^目标[：:]\s*/i, '目标：')}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {(isPrologue || chapter?.outline_goal) && (
               <p
                 className="text-sm text-gray-500 dark:text-gray-400 mt-1 truncate max-w-md"
