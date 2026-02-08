@@ -1,4 +1,4 @@
-import { ReactNode } from 'react';
+import { ReactNode, useEffect } from 'react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { useAppStore } from '@store/index';
@@ -10,6 +10,11 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const sidebarOpen = useAppStore(state => state.sidebarOpen);
+  const theme = useAppStore(state => state.theme);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">

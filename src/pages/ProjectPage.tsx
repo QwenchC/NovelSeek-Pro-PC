@@ -757,9 +757,8 @@ function ChapterItem({ chapter, onClick, onDelete }: ChapterItemProps) {
     >
       <div className="flex items-center justify-between">
         <div className="flex-1 min-w-0 mr-4">
-          <h3 className="font-medium text-gray-900 dark:text-white text-transparent">
-            <span className="text-gray-900 dark:text-white">{displayTitle}</span>
-            第{chapter.order_index}章 - {chapter.title}
+          <h3 className="font-medium text-gray-900 dark:text-white truncate">
+            {displayTitle}
           </h3>
           {(isPrologue || goalPreview) && (
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 truncate">

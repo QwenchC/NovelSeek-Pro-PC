@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { useAppStore } from '@store/index';
 import { aiApi } from '@services/api';
 import { Button } from '@components/Button';
-import { Input } from '@components/Input';
-import { Key, Image, CheckCircle, XCircle } from 'lucide-react';
+import { Key, Image, CheckCircle, XCircle, Eye, EyeOff, ExternalLink } from 'lucide-react';
 
 export function SettingsPage() {
   const { deepseekKey, pollinationsKey, setDeepseekKey, setPollinationsKey } = useAppStore();
   const [localDeepSeekKey, setLocalDeepSeekKey] = useState(deepseekKey);
   const [localPollinationsKey, setLocalPollinationsKey] = useState(pollinationsKey);
+  const [showDeepSeekKey, setShowDeepSeekKey] = useState(false);
+  const [showPollinationsKey, setShowPollinationsKey] = useState(false);
   const [deepseekStatus, setDeepseekStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [pollinationsStatus, setPollinationsStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
 
@@ -53,13 +54,37 @@ export function SettingsPage() {
           </div>
           
           <div className="space-y-4">
-            <Input
-              label="API Key"
-              type="password"
-              value={localDeepSeekKey}
-              onChange={(e) => setLocalDeepSeekKey(e.target.value)}
-              placeholder="sk-..."
-            />
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">API Key</label>
+                <a
+                  href="https://platform.deepseek.com/api_keys"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+                >
+                  获取密钥
+                  <ExternalLink className="w-3 h-3 ml-1" />
+                </a>
+              </div>
+              <div className="relative">
+                <input
+                  type={showDeepSeekKey ? 'text' : 'password'}
+                  value={localDeepSeekKey}
+                  onChange={(e) => setLocalDeepSeekKey(e.target.value)}
+                  placeholder="sk-..."
+                  className="w-full px-3 py-2 pr-11 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowDeepSeekKey((prev) => !prev)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  title={showDeepSeekKey ? '隐藏密钥' : '显示密钥'}
+                >
+                  {showDeepSeekKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
             
             <div className="flex items-center space-x-2">
               <Button onClick={testDeepSeek} loading={deepseekStatus === 'testing'}>
@@ -89,13 +114,37 @@ export function SettingsPage() {
           </div>
           
           <div className="space-y-4">
-            <Input
-              label="API Key (可选)"
-              type="password"
-              value={localPollinationsKey}
-              onChange={(e) => setLocalPollinationsKey(e.target.value)}
-              placeholder="pk_... 或 sk_..."
-            />
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">API Key (可选)</label>
+                <a
+                  href="https://enter.pollinations.ai/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+                >
+                  获取密钥
+                  <ExternalLink className="w-3 h-3 ml-1" />
+                </a>
+              </div>
+              <div className="relative">
+                <input
+                  type={showPollinationsKey ? 'text' : 'password'}
+                  value={localPollinationsKey}
+                  onChange={(e) => setLocalPollinationsKey(e.target.value)}
+                  placeholder="pk_... 或 sk_..."
+                  className="w-full px-3 py-2 pr-11 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPollinationsKey((prev) => !prev)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  title={showPollinationsKey ? '隐藏密钥' : '显示密钥'}
+                >
+                  {showPollinationsKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
             
             <p className="text-sm text-gray-600 dark:text-gray-400">
               注意：不提供API Key也可使用，但会有限流

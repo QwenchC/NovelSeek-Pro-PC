@@ -64,12 +64,22 @@ interface AppState {
   mobileMenuOpen: boolean;
   toggleSidebar: () => void;
   setMobileMenuOpen: (open: boolean) => void;
+  theme: 'light' | 'dark';
+  setTheme: (theme: 'light' | 'dark') => void;
+  toggleTheme: () => void;
 
   // Generation State
   isGenerating: boolean;
   generationProgress: string;
   setIsGenerating: (isGenerating: boolean) => void;
   setGenerationProgress: (progress: string) => void;
+}
+
+function getInitialTheme(): 'light' | 'dark' {
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
+    return 'dark';
+  }
+  return 'light';
 }
 
 export const useAppStore = create<AppState>()(
@@ -138,6 +148,9 @@ export const useAppStore = create<AppState>()(
       mobileMenuOpen: false,
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
+      theme: getInitialTheme(),
+      setTheme: (theme) => set({ theme }),
+      toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
 
       // Generation State
       isGenerating: false,
@@ -155,6 +168,7 @@ export const useAppStore = create<AppState>()(
         worldSettingByProject: state.worldSettingByProject,
         timelineByProject: state.timelineByProject,
         promoByChapter: state.promoByChapter,
+        theme: state.theme,
       }),
     }
   )
