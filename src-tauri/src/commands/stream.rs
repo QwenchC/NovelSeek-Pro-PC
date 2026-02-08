@@ -722,9 +722,19 @@ pub async fn generate_illustration_prompt(
 pub async fn generate_chapter_promo(
     #[allow(non_snake_case)] chapterTitle: String,
     #[allow(non_snake_case)] chapterContent: String,
+    #[allow(non_snake_case)] style: Option<String>,
     #[allow(non_snake_case)] deepseekKey: String,
 ) -> Result<ChapterPromoResult, String> {
     let client = Client::new();
+    let style_text = style.unwrap_or_default();
+    let style_section = if style_text.trim().is_empty() {
+        "用户未指定画风，请根据章节氛围选择最合适的英文画风。".to_string()
+    } else {
+        format!(
+            "用户指定画风（可能包含中文，请先翻译为英文再融合到 image_prompt）：{}",
+            style_text
+        )
+    };
     
     // 构建提示词：让AI生成摘要和英文图片提示词
     let prompt = format!(
@@ -738,6 +748,9 @@ pub async fn generate_chapter_promo(
 
 ---
 
+## 画风要求
+{}
+
 请完成以下任务：
 
 ### 任务1：生成摘要
@@ -749,6 +762,7 @@ pub async fn generate_chapter_promo(
 ### 任务2：生成图片提示词
 根据章节内容，生成一段英文图片提示词(image prompt)，用于AI生图。要求：
 - 必须是英文
+- 必须融入“画风要求”中的风格信息（若是中文需先翻译为英文）
 - 描述本章最具代表性的场景或氛围
 - 包含画面风格描述（如 cinematic, dramatic lighting, anime style 等）
 - 适合作为章节封面使用
@@ -761,7 +775,8 @@ pub async fn generate_chapter_promo(
             chapterContent.chars().take(3000).collect::<String>() + "..."
         } else {
             chapterContent.clone()
-        }
+        },
+        style_section
     );
 
     let request_body = serde_json::json!({
@@ -769,7 +784,7 @@ pub async fn generate_chapter_promo(
         "messages": [
             {
                 "role": "system",
-                "content": "你是一位专业的小说营销专家，擅长提炼故事亮点和创作吸引人的推广文案。请严格按JSON格式返回结果。"
+                "content": "你是一位专业的小说营销专家与图像提示词工程师。请严格按JSON格式返回结果，且image_prompt必须是英文。"
             },
             {
                 "role": "user",

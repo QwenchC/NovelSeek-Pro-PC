@@ -76,6 +76,8 @@ export function EditorPage() {
   const [isPromoExpanded, setIsPromoExpanded] = useState(false);
   const [isGeneratingPromo, setIsGeneratingPromo] = useState(false);
   const [promoError, setPromoError] = useState<string | null>(null);
+  const [showPromoStyleConfig, setShowPromoStyleConfig] = useState(false);
+  const [promoStyle, setPromoStyle] = useState('cinematic');
 
   // 插图相关状态
   const [isIllustrationMode, setIsIllustrationMode] = useState(false);
@@ -547,7 +549,7 @@ export function EditorPage() {
     }
   };
 
-  const handleGeneratePromo = async () => {
+  const openPromoStyleConfig = () => {
     if (!content || content.trim().length < 100) {
       setPromoError('章节内容太少，请先生成或编写更多内容（至少100字）');
       return;
@@ -558,6 +560,22 @@ export function EditorPage() {
       return;
     }
 
+    setPromoError(null);
+    setShowPromoStyleConfig(true);
+  };
+
+  const handleGeneratePromo = async (styleInput?: string) => {
+    if (!content || content.trim().length < 100) {
+      setPromoError('章节内容太少，请先生成或编写更多内容（至少100字）');
+      return;
+    }
+
+    if (!deepseekKey) {
+      setPromoError('请先在设置中配置DeepSeek API Key');
+      return;
+    }
+
+    const style = styleInput?.trim() || null;
     setIsGeneratingPromo(true);
     setPromoError(null);
 
@@ -566,6 +584,7 @@ export function EditorPage() {
       const promoData = await invoke<{ image_prompt: string; summary: string }>('generate_chapter_promo', {
         chapterTitle: chapter?.title || '未命名章节',
         chapterContent: content,
+        style,
         deepseekKey: deepseekKey,
       });
 
@@ -596,6 +615,11 @@ export function EditorPage() {
     } finally {
       setIsGeneratingPromo(false);
     }
+  };
+
+  const confirmPromoGeneration = async () => {
+    setShowPromoStyleConfig(false);
+    await handleGeneratePromo(promoStyle);
   };
 
   const toggleParagraphSelection = (index: number) => {
@@ -905,7 +929,7 @@ export function EditorPage() {
                 {/* 生成推文按钮 */}
                 <Button 
                   variant="outline" 
-                  onClick={handleGeneratePromo} 
+                  onClick={openPromoStyleConfig} 
                   disabled={isGeneratingPromo || !content || content.trim().length < 100}
                   className="whitespace-nowrap"
                   title={!content || content.trim().length < 100 ? '需要至少100字内容' : '生成章节封面和摘要'}
@@ -1007,7 +1031,7 @@ export function EditorPage() {
                         <Button 
                           variant="outline" 
                           size="sm"
-                          onClick={handleGeneratePromo}
+                          onClick={openPromoStyleConfig}
                           disabled={isGeneratingPromo}
                         >
                           {isGeneratingPromo ? (
@@ -1234,6 +1258,45 @@ export function EditorPage() {
           </div>
         </div>
       </div>
+
+      {showPromoStyleConfig && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">章节封面风格</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  图片风格
+                </label>
+                <input
+                  type="text"
+                  list="promo-style-options"
+                  value={promoStyle}
+                  onChange={e => setPromoStyle(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                  placeholder="选择或输入风格（支持中文，会自动转换）"
+                />
+                <datalist id="promo-style-options">
+                  <option value="cinematic" />
+                  <option value="watercolor" />
+                  <option value="anime" />
+                </datalist>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                支持自定义输入（含中文），系统会将风格整合为英文提示词用于生图
+              </p>
+            </div>
+            <div className="flex space-x-3 pt-6">
+              <Button type="button" variant="outline" onClick={() => setShowPromoStyleConfig(false)} className="flex-1">
+                取消
+              </Button>
+              <Button onClick={confirmPromoGeneration} loading={isGeneratingPromo} className="flex-1">
+                生成
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showIllustrationConfig && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
