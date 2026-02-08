@@ -53,12 +53,15 @@ type PdfWithLink = jsPDF & {
 const fontBase64Cache = new Map<string, string>();
 
 interface ExportPageProgress {
+  exportFormat: ExportFormat;
   includeNovelCover: boolean;
   includeChapterCover: boolean;
   includeParagraphIllustrations: boolean;
   selectedFontKey: string;
   removedIllustrationIds: string[];
 }
+
+type ExportFormat = 'pdf' | 'txt' | 'epub' | 'mobi';
 
 function getExportProgressStorageKey(projectId: string): string {
   return `novelseek-export-progress:${projectId}`;
@@ -69,7 +72,12 @@ function loadExportProgress(projectId: string): ExportPageProgress | null {
     const raw = localStorage.getItem(getExportProgressStorageKey(projectId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ExportPageProgress>;
+    const exportFormat =
+      parsed.exportFormat === 'txt' || parsed.exportFormat === 'epub' || parsed.exportFormat === 'mobi'
+        ? parsed.exportFormat
+        : 'pdf';
     return {
+      exportFormat,
       includeNovelCover: parsed.includeNovelCover !== false,
       includeChapterCover: parsed.includeChapterCover !== false,
       includeParagraphIllustrations: parsed.includeParagraphIllustrations !== false,
@@ -89,6 +97,147 @@ function saveExportProgress(projectId: string, progress: ExportPageProgress): vo
   } catch {
     // Ignore storage write failures to avoid blocking export flow.
   }
+}
+
+function encodeUtf8(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, item) => sum + item.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return output;
+}
+
+function uint16LE(value: number): Uint8Array {
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(0, value, true);
+  return bytes;
+}
+
+function uint32LE(value: number): Uint8Array {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, value >>> 0, true);
+  return bytes;
+}
+
+function downloadBytes(fileName: string, bytes: Uint8Array, mimeType: string): void {
+  const normalized = new Uint8Array(bytes.length);
+  normalized.set(bytes);
+  const blob = new Blob([normalized.buffer], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) {
+      c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+interface ZipInputFile {
+  path: string;
+  data: Uint8Array;
+}
+
+function buildStoredZip(files: ZipInputFile[]): Uint8Array {
+  const localRecords: Uint8Array[] = [];
+  const centralRecords: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const fileNameBytes = encodeUtf8(file.path);
+    const checksum = crc32(file.data);
+
+    const localHeader = concatBytes([
+      uint32LE(0x04034b50),
+      uint16LE(20),
+      uint16LE(0),
+      uint16LE(0),
+      uint16LE(0),
+      uint16LE(0),
+      uint32LE(checksum),
+      uint32LE(file.data.length),
+      uint32LE(file.data.length),
+      uint16LE(fileNameBytes.length),
+      uint16LE(0),
+      fileNameBytes,
+      file.data,
+    ]);
+    localRecords.push(localHeader);
+
+    const centralHeader = concatBytes([
+      uint32LE(0x02014b50),
+      uint16LE(20),
+      uint16LE(20),
+      uint16LE(0),
+      uint16LE(0),
+      uint16LE(0),
+      uint16LE(0),
+      uint32LE(checksum),
+      uint32LE(file.data.length),
+      uint32LE(file.data.length),
+      uint16LE(fileNameBytes.length),
+      uint16LE(0),
+      uint16LE(0),
+      uint16LE(0),
+      uint16LE(0),
+      uint32LE(0),
+      uint32LE(offset),
+      fileNameBytes,
+    ]);
+    centralRecords.push(centralHeader);
+
+    offset += localHeader.length;
+  }
+
+  const centralDirectory = concatBytes(centralRecords);
+  const endRecord = concatBytes([
+    uint32LE(0x06054b50),
+    uint16LE(0),
+    uint16LE(0),
+    uint16LE(files.length),
+    uint16LE(files.length),
+    uint32LE(centralDirectory.length),
+    uint32LE(offset),
+    uint16LE(0),
+  ]);
+
+  return concatBytes([...localRecords, centralDirectory, endRecord]);
 }
 
 function stripMarkdown(text: string): string {
@@ -380,6 +529,206 @@ function wrapParagraphForPdf(pdf: jsPDF, text: string, maxWidth: number): string
   return lines.length > 0 ? lines : [indent];
 }
 
+function buildTextExportContent(project: Project, chapters: ChapterRenderData[]): string {
+  const lines: string[] = [];
+  lines.push(project.title);
+  if (project.author) lines.push(`作者：${project.author}`);
+  if (project.genre) lines.push(`类型：${project.genre}`);
+  lines.push('');
+  lines.push('====================');
+  lines.push('');
+
+  if (chapters.length === 0) {
+    lines.push('（暂无可导出章节）');
+    return lines.join('\n');
+  }
+
+  for (const item of chapters) {
+    lines.push(item.displayTitle);
+    if (!item.isPrologue && item.summary) {
+      lines.push(`摘要：${item.summary}`);
+    }
+    lines.push('');
+
+    if (item.paragraphs.length === 0) {
+      lines.push('（本章节暂无正文内容）');
+      lines.push('');
+      continue;
+    }
+
+    for (const paragraph of item.paragraphs) {
+      lines.push(paragraph);
+      lines.push('');
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function buildEpubBinary(project: Project, chapters: ChapterRenderData[]): Uint8Array {
+  const identifier = escapeXml(project.id || `novelseek-${Date.now()}`);
+  const title = escapeXml(project.title || '未命名小说');
+  const author = escapeXml(project.author?.trim() || '未知作者');
+  const genre = project.genre?.trim() ? escapeXml(project.genre.trim()) : '';
+  const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+  const chapterFiles = chapters.map((item, index) => {
+    const chapterTitle = escapeXml(item.displayTitle);
+    const summaryBlock = !item.isPrologue && item.summary ? `<p class="summary">摘要：${escapeXml(item.summary)}</p>` : '';
+    const bodyParagraphs =
+      item.paragraphs.length === 0
+        ? '<p>（本章节暂无正文内容）</p>'
+        : item.paragraphs.map((paragraph) => `<p>${escapeXml(paragraph)}</p>`).join('\n');
+    const fileName = `chapter-${index + 1}.xhtml`;
+
+    const content = `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>${chapterTitle}</title>
+    <style>
+      body { margin: 6%; line-height: 1.85; font-size: 1em; }
+      h1 { margin: 0 0 1.5em 0; font-size: 1.45em; }
+      p { margin: 0 0 1em 0; text-indent: 2em; }
+      .summary { text-indent: 0; font-size: 0.95em; color: #444; margin-bottom: 1.5em; }
+    </style>
+  </head>
+  <body>
+    <h1>${chapterTitle}</h1>
+    ${summaryBlock}
+    ${bodyParagraphs}
+  </body>
+</html>`;
+
+    return {
+      id: `chapter-${index + 1}`,
+      href: fileName,
+      title: item.displayTitle,
+      content,
+    };
+  });
+
+  const titlePage = `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>${title}</title>
+    <style>
+      body { margin: 10% 8%; text-align: center; line-height: 1.8; }
+      h1 { font-size: 2em; margin-bottom: 1.5em; }
+      p { margin: 0.45em 0; }
+    </style>
+  </head>
+  <body>
+    <h1>${title}</h1>
+    <p>作者：${author}</p>
+    ${genre ? `<p>类型：${genre}</p>` : ''}
+  </body>
+</html>`;
+
+  const navEntries = [
+    '<li><a href="title.xhtml">书籍信息</a></li>',
+    ...chapterFiles.map((item) => `<li><a href="${item.href}">${escapeXml(item.title)}</a></li>`),
+  ].join('\n');
+
+  const navDocument = `<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN" lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>目录</title>
+  </head>
+  <body>
+    <nav epub:type="toc" id="toc">
+      <h1>目录</h1>
+      <ol>
+        ${navEntries}
+      </ol>
+    </nav>
+  </body>
+</html>`;
+
+  const navPoints = [
+    `<navPoint id="navpoint-title" playOrder="1">
+  <navLabel><text>书籍信息</text></navLabel>
+  <content src="title.xhtml"/>
+</navPoint>`,
+    ...chapterFiles.map(
+      (item, index) => `<navPoint id="navpoint-${index + 2}" playOrder="${index + 2}">
+  <navLabel><text>${escapeXml(item.title)}</text></navLabel>
+  <content src="${item.href}"/>
+</navPoint>`
+    ),
+  ].join('\n');
+
+  const tocNcx = `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="${identifier}"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>${title}</text></docTitle>
+  <navMap>
+${navPoints}
+  </navMap>
+</ncx>`;
+
+  const manifestItems = [
+    '<item id="title-page" href="title.xhtml" media-type="application/xhtml+xml"/>',
+    '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+    '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
+    ...chapterFiles.map(
+      (item) => `<item id="${item.id}" href="${item.href}" media-type="application/xhtml+xml"/>`
+    ),
+  ].join('\n    ');
+
+  const spineItems = [
+    '<itemref idref="title-page"/>',
+    ...chapterFiles.map((item) => `<itemref idref="${item.id}"/>`),
+  ].join('\n    ');
+
+  const contentOpf = `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0" xml:lang="zh-CN">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">${identifier}</dc:identifier>
+    <dc:title>${title}</dc:title>
+    <dc:creator>${author}</dc:creator>
+    <dc:language>zh-CN</dc:language>
+    <meta property="dcterms:modified">${generatedAt}</meta>
+  </metadata>
+  <manifest>
+    ${manifestItems}
+  </manifest>
+  <spine toc="ncx">
+    ${spineItems}
+  </spine>
+</package>`;
+
+  const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+
+  const files: ZipInputFile[] = [
+    { path: 'mimetype', data: encodeUtf8('application/epub+zip') },
+    { path: 'META-INF/container.xml', data: encodeUtf8(containerXml) },
+    { path: 'OEBPS/content.opf', data: encodeUtf8(contentOpf) },
+    { path: 'OEBPS/toc.ncx', data: encodeUtf8(tocNcx) },
+    { path: 'OEBPS/nav.xhtml', data: encodeUtf8(navDocument) },
+    { path: 'OEBPS/title.xhtml', data: encodeUtf8(titlePage) },
+    ...chapterFiles.map((item) => ({
+      path: `OEBPS/${item.href}`,
+      data: encodeUtf8(item.content),
+    })),
+  ];
+
+  return buildStoredZip(files);
+}
+
 export function ExportPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -389,6 +738,7 @@ export function ExportPage() {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [fontOptions, setFontOptions] = useState<SystemFontOption[]>([]);
   const [selectedFontKey, setSelectedFontKey] = useState('');
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('pdf');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeNovelCover, setIncludeNovelCover] = useState(true);
@@ -402,12 +752,14 @@ export function ExportPage() {
     if (!id) return;
     const progress = loadExportProgress(id);
     if (progress) {
+      setExportFormat(progress.exportFormat);
       setIncludeNovelCover(progress.includeNovelCover);
       setIncludeChapterCover(progress.includeChapterCover);
       setIncludeParagraphIllustrations(progress.includeParagraphIllustrations);
       setRemovedIllustrationIds(new Set(progress.removedIllustrationIds));
       setSelectedFontKey(progress.selectedFontKey);
     } else {
+      setExportFormat('pdf');
       setIncludeNovelCover(true);
       setIncludeChapterCover(true);
       setIncludeParagraphIllustrations(true);
@@ -466,6 +818,7 @@ export function ExportPage() {
   useEffect(() => {
     if (!id || !isProgressHydrated) return;
     saveExportProgress(id, {
+      exportFormat,
       includeNovelCover,
       includeChapterCover,
       includeParagraphIllustrations,
@@ -475,6 +828,7 @@ export function ExportPage() {
   }, [
     id,
     isProgressHydrated,
+    exportFormat,
     includeNovelCover,
     includeChapterCover,
     includeParagraphIllustrations,
@@ -520,6 +874,8 @@ export function ExportPage() {
     });
   }, [chapters, promoByChapter, removedIllustrationIds]);
 
+  const isTextOnlyFormat = exportFormat !== 'pdf';
+
   useEffect(() => {
     if (chapters.length === 0) return;
     const validIds = new Set<string>();
@@ -547,6 +903,44 @@ export function ExportPage() {
 
   const handleResetRemovedIllustrations = () => {
     setRemovedIllustrationIds(new Set());
+  };
+
+  const exportTextOnlyFile = async (targetFormat: 'txt' | 'mobi') => {
+    if (!project) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const content = buildTextExportContent(project, chapterRenderData);
+      const utf8Bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+      const bytes = concatBytes([utf8Bom, encodeUtf8(content)]);
+      const fileName = `${toSafeFileName(project.title)}_export.${targetFormat}`;
+      const mimeType =
+        targetFormat === 'txt' ? 'text/plain;charset=utf-8' : 'application/x-mobipocket-ebook;charset=utf-8';
+      downloadBytes(fileName, bytes, mimeType);
+    } catch (exportError) {
+      const message =
+        typeof exportError === 'string' ? exportError : (exportError as Error)?.message || `${targetFormat.toUpperCase()} 导出失败`;
+      setError(message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportEpub = async () => {
+    if (!project) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const epubBytes = buildEpubBinary(project, chapterRenderData);
+      const fileName = `${toSafeFileName(project.title)}_export.epub`;
+      downloadBytes(fileName, epubBytes, 'application/epub+zip');
+    } catch (exportError) {
+      const message =
+        typeof exportError === 'string' ? exportError : (exportError as Error)?.message || 'EPUB 导出失败';
+      setError(message);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleExportPdf = async () => {
@@ -785,6 +1179,33 @@ export function ExportPage() {
     }
   };
 
+  const handleExport = async () => {
+    if (exportFormat === 'pdf') {
+      await handleExportPdf();
+      return;
+    }
+    if (exportFormat === 'epub') {
+      await handleExportEpub();
+      return;
+    }
+    await exportTextOnlyFile(exportFormat);
+  };
+
+  const canExportCurrentFormat = exportFormat === 'pdf' ? fontOptions.length > 0 : true;
+
+  const exportButtonLabel = (() => {
+    switch (exportFormat) {
+      case 'txt':
+        return '导出 TXT';
+      case 'epub':
+        return '导出 EPUB';
+      case 'mobi':
+        return '导出 MOBI';
+      default:
+        return '导出 PDF';
+    }
+  })();
+
   if (loading) {
     return <div className="text-sm text-gray-600 dark:text-gray-400">正在加载导出数据...</div>;
   }
@@ -816,20 +1237,48 @@ export function ExportPage() {
             <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">导出格式</h2>
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
-                <input type="radio" checked readOnly />
-                PDF（A4）
+                <input
+                  type="radio"
+                  name="export-format"
+                  value="pdf"
+                  checked={exportFormat === 'pdf'}
+                  onChange={() => setExportFormat('pdf')}
+                  disabled={exporting}
+                />
+                PDF（A4，支持图片）
               </label>
-              <label className="flex items-center gap-2 text-sm text-gray-400 dark:text-gray-500">
-                <input type="radio" disabled />
-                TXT（后续支持）
+              <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
+                <input
+                  type="radio"
+                  name="export-format"
+                  value="txt"
+                  checked={exportFormat === 'txt'}
+                  onChange={() => setExportFormat('txt')}
+                  disabled={exporting}
+                />
+                TXT（纯文本）
               </label>
-              <label className="flex items-center gap-2 text-sm text-gray-400 dark:text-gray-500">
-                <input type="radio" disabled />
-                EPUB（后续支持）
+              <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
+                <input
+                  type="radio"
+                  name="export-format"
+                  value="epub"
+                  checked={exportFormat === 'epub'}
+                  onChange={() => setExportFormat('epub')}
+                  disabled={exporting}
+                />
+                EPUB（纯文本）
               </label>
-              <label className="flex items-center gap-2 text-sm text-gray-400 dark:text-gray-500">
-                <input type="radio" disabled />
-                MOBI（后续支持）
+              <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
+                <input
+                  type="radio"
+                  name="export-format"
+                  value="mobi"
+                  checked={exportFormat === 'mobi'}
+                  onChange={() => setExportFormat('mobi')}
+                  disabled={exporting}
+                />
+                MOBI（纯文本）
               </label>
             </div>
           </div>
@@ -839,7 +1288,7 @@ export function ExportPage() {
             <select
               value={selectedFontKey}
               onChange={(event) => setSelectedFontKey(event.target.value)}
-              disabled={fontOptions.length === 0 || exporting}
+              disabled={fontOptions.length === 0 || exporting || exportFormat !== 'pdf'}
               className="w-full rounded-md border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm disabled:opacity-60 dark:bg-gray-900 dark:border-gray-700 dark:text-gray-100"
             >
               {fontOptions.length === 0 ? (
@@ -852,49 +1301,61 @@ export function ExportPage() {
                 ))
               )}
             </select>
-            <p className="text-xs text-gray-500 dark:text-gray-400">从系统字体目录读取并嵌入 PDF</p>
-            <p className="text-xs text-amber-700 dark:text-amber-400">若导出后中文显示异常，请切换其他字体重试</p>
+            {exportFormat === 'pdf' ? (
+              <>
+                <p className="text-xs text-gray-500 dark:text-gray-400">从系统字体目录读取并嵌入 PDF</p>
+                <p className="text-xs text-amber-700 dark:text-amber-400">若导出后中文显示异常，请切换其他字体重试</p>
+              </>
+            ) : (
+              <p className="text-xs text-gray-500 dark:text-gray-400">当前格式为文本导出，不依赖字体嵌入</p>
+            )}
           </div>
 
           <div>
             <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">导出内容</h2>
             <div className="space-y-2">
-              <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
+              <label className={`flex items-center gap-2 text-sm ${isTextOnlyFormat ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
                 <input
                   type="checkbox"
                   checked={includeNovelCover}
                   onChange={(event) => setIncludeNovelCover(event.target.checked)}
+                  disabled={isTextOnlyFormat || exporting}
                 />
                 小说封面
               </label>
-              <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
+              <label className={`flex items-center gap-2 text-sm ${isTextOnlyFormat ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
                 <input
                   type="checkbox"
                   checked={includeChapterCover}
                   onChange={(event) => setIncludeChapterCover(event.target.checked)}
+                  disabled={isTextOnlyFormat || exporting}
                 />
                 章节封面
               </label>
-              <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
+              <label className={`flex items-center gap-2 text-sm ${isTextOnlyFormat ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
                 <input
                   type="checkbox"
                   checked={includeParagraphIllustrations}
                   onChange={(event) => setIncludeParagraphIllustrations(event.target.checked)}
+                  disabled={isTextOnlyFormat || exporting}
                 />
                 段落插图
               </label>
             </div>
+            {isTextOnlyFormat && (
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">当前格式不支持图片，仅导出文本内容</p>
+            )}
           </div>
 
           <div className="space-y-2">
             <Button
-              onClick={handleExportPdf}
+              onClick={handleExport}
               loading={exporting}
-              disabled={fontOptions.length === 0}
+              disabled={!canExportCurrentFormat}
               className="w-full"
             >
               <Download className="w-4 h-4 mr-2" />
-              导出 PDF
+              {exportButtonLabel}
             </Button>
             <Button
               variant="outline"
@@ -915,10 +1376,12 @@ export function ExportPage() {
         </section>
 
         <section className="lg:col-span-3 bg-gray-100 dark:bg-gray-900/40 rounded-lg border border-gray-200 dark:border-gray-700 p-4 min-h-0 flex flex-col">
-          <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">导出预览（可删除个别段落插图）</div>
+          <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+            {isTextOnlyFormat ? '导出预览（文本导出，图片不会导出）' : '导出预览（可删除个别段落插图）'}
+          </div>
           <div className="flex-1 overflow-auto">
             <div className="mx-auto max-w-[794px] bg-white text-black rounded-md shadow p-10 space-y-12">
-              {includeNovelCover && projectCover && (
+              {!isTextOnlyFormat && includeNovelCover && projectCover && (
                 <div className="bg-white rounded space-y-3">
                   <img src={projectCover} alt="小说封面" className="w-full max-h-[1020px] object-contain rounded" />
                 </div>
@@ -938,7 +1401,7 @@ export function ExportPage() {
                     <p className="text-sm text-gray-700 border-l-2 border-gray-300 pl-3">摘要：{item.summary}</p>
                   )}
 
-                  {includeChapterCover && item.chapterCover && (
+                  {!isTextOnlyFormat && includeChapterCover && item.chapterCover && (
                     <img
                       src={item.chapterCover}
                       alt={`${item.displayTitle} 封面`}
@@ -951,7 +1414,8 @@ export function ExportPage() {
                   {item.paragraphs.length === 0 ? (
                     <div className="space-y-3">
                       <p className="text-gray-500 italic">本章节暂时无正文内容</p>
-                      {includeParagraphIllustrations &&
+                      {!isTextOnlyFormat &&
+                        includeParagraphIllustrations &&
                         item.illustrations.map((illustration) => (
                           <div key={illustration.id} className="border border-gray-200 rounded p-3 space-y-2 mt-1 mb-6">
                             <div className="flex items-center justify-end">
@@ -977,7 +1441,7 @@ export function ExportPage() {
                     <div className="space-y-5">
                       {item.paragraphs.map((paragraph, index) => {
                         const anchor = index + 1;
-                        const currentIllustrations = includeParagraphIllustrations
+                        const currentIllustrations = !isTextOnlyFormat && includeParagraphIllustrations
                           ? item.illustrations.filter((illustration) => illustration.anchorIndex === anchor)
                           : [];
                         return (
