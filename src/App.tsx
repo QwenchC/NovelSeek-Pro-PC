@@ -6,6 +6,7 @@ import { EditorPage } from '@pages/EditorPage';
 import { SettingsPage } from '@pages/SettingsPage';
 import { OutlinePage } from '@pages/OutlinePage';
 import { CharactersPage } from '@pages/CharactersPage';
+import { ExportPage } from '@pages/ExportPage';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="/project/:id" element={<ProjectPage />} />
           <Route path="/project/:id/outline" element={<OutlinePage />} />
           <Route path="/project/:id/characters" element={<CharactersPage />} />
+          <Route path="/project/:id/export" element={<ExportPage />} />
           <Route path="/editor/:projectId/:chapterId?" element={<EditorPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

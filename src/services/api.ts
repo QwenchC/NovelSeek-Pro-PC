@@ -9,6 +9,7 @@ import type {
   GenerateChapterInput,
   GenerateRevisionInput,
   GenerateImageInput,
+  SystemFontOption,
 } from '@typings/index';
 
 // Project API
@@ -44,4 +45,11 @@ export const aiApi = {
   testDeepSeek: (apiKey: string) => invoke<boolean>('test_deepseek_connection', { apiKey }),
   testPollinations: (apiKey?: string) =>
     invoke<boolean>('test_pollinations_connection', { apiKey }),
+};
+
+// System API
+export const systemApi = {
+  listSystemFonts: () => invoke<SystemFontOption[]>('list_system_fonts'),
+  getSystemFontBase64: (fileName: string) =>
+    invoke<string>('get_system_font_base64', { fileName }),
 };

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi } from '@services/api';
 import { Button } from '@components/Button';
-import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight, FileDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Chapter, Project } from '@typings/index';
@@ -430,6 +430,10 @@ export function ProjectPage() {
             <Button variant="outline" onClick={() => setShowEditModal(true)} className="whitespace-nowrap">
               <Edit className="w-4 h-4 mr-2" />
               编辑
+            </Button>
+            <Button variant="outline" onClick={() => navigate(`/project/${id}/export`)} className="whitespace-nowrap">
+              <FileDown className="w-4 h-4 mr-2" />
+              导出电子书
             </Button>
           </div>
         </div>

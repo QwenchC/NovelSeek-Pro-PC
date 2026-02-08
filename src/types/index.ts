@@ -94,6 +94,13 @@ export interface ApiConfig {
   pollinations_base_url: string;
 }
 
+export interface SystemFontOption {
+  key: string;
+  label: string;
+  fileName: string;
+  pdfFamily: string;
+}
+
 export interface GenerateOutlineInput {
   title: string;
   genre: string;

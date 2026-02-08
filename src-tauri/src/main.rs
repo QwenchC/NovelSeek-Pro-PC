@@ -50,6 +50,8 @@ async fn main() {
             commands::stream::generate_illustration_prompt,
             commands::stream::generate_chapter_promo,
             commands::stream::generate_promo_image,
+            commands::system::list_system_fonts,
+            commands::system::get_system_font_base64,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,7 @@
 {
   "name": "novelseek-pro-pc",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "Professional Novel Generation & Publishing Tool",
   "author": "NovelSeek Team",
@@ -21,6 +21,8 @@
     "axios": "^1.6.7",
     "clsx": "^2.1.0",
     "date-fns": "^3.3.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.1.0",
     "lucide-react": "^0.344.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

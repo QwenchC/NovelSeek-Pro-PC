@@ -1,6 +1,6 @@
 [package]
 name = "novelseek-pro-pc"
-version = "0.1.0"
+version = "1.1.0"
 description = "Professional Novel Generation & Publishing Tool"
 authors = ["NovelSeek Team"]
 license = ""
