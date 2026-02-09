@@ -11,7 +11,7 @@ It is built with `Tauri + React + TypeScript + Rust + SQLite`, supports local-fi
 
 - Official website: <https://pollinations.ai>
 
-[![pollinations.ai Logo White](docs/assets/pollinations-logo-on-dark.svg)](https://pollinations.ai) [![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
+[![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
 
 ## Version
 
