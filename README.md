@@ -10,16 +10,12 @@ It is built with `Tauri + React + TypeScript + Rust + SQLite`, supports local-fi
 ## Pollinations Attribution
 
 - Official website: <https://pollinations.ai>
-- Official Logo (White): <https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo.svg>
-- Official Logo Text (White): <https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo-text.svg>
 
-[![pollinations.ai Logo White](docs/assets/pollinations-logo-on-dark.svg)](https://pollinations.ai)
-
-[![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
+[![pollinations.ai Logo White](docs/assets/pollinations-logo-on-dark.svg)](https://pollinations.ai) [![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
 
 ## Version
 
-- Current version: `v1.2.1`
+- Current version: `v1.3.0`
 - Primary platform: Windows
 
 ## Feature Overview
