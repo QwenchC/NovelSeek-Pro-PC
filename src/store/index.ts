@@ -15,6 +15,9 @@ export interface Character {
   personality: string;
   background: string;
   motivation: string;
+  appearance: string;
+  portraitBase64?: string;
+  portraitPrompt?: string;
   isProtagonist: boolean;
 }
 
@@ -22,6 +25,28 @@ export interface ChapterPromo {
   imagePrompt: string;
   summary: string;
   imageBase64: string | null;
+}
+
+function normalizeCharacterRecord(character: Partial<Character>, index = 0): Character {
+  return {
+    id: character.id || `char-${Date.now()}-${index}`,
+    name: character.name || `角色${index + 1}`,
+    role: character.role || '',
+    personality: character.personality || '',
+    background: character.background || '',
+    motivation: character.motivation || '',
+    appearance: character.appearance || '',
+    portraitBase64: character.portraitBase64 || undefined,
+    portraitPrompt: character.portraitPrompt || undefined,
+    isProtagonist: Boolean(character.isProtagonist),
+  };
+}
+
+function normalizeCharacterList(characters: unknown): Character[] {
+  if (!Array.isArray(characters)) return [];
+  return characters.map((character, index) =>
+    normalizeCharacterRecord((character as Partial<Character>) || {}, index)
+  );
 }
 
 const TEXT_MODEL_PROVIDERS: TextModelProvider[] = [
@@ -278,10 +303,10 @@ export const useAppStore = create<AppState>()(
         set((state) => ({
           charactersByProject: {
             ...state.charactersByProject,
-            [projectId]: characters,
+            [projectId]: normalizeCharacterList(characters),
           },
         })),
-      getCharacters: (projectId) => get().charactersByProject[projectId] || [],
+      getCharacters: (projectId) => normalizeCharacterList(get().charactersByProject[projectId]),
 
       promoByChapter: {},
       setPromo: (chapterId, promo) =>

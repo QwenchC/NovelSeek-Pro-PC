@@ -8,6 +8,10 @@ import type {
   GenerateOutlineInput,
   GenerateChapterInput,
   GenerateRevisionInput,
+  GenerateCharacterAppearanceInput,
+  CharacterAppearanceResult,
+  GenerateCharacterPortraitPromptInput,
+  CharacterPortraitPromptResult,
   GenerateImageInput,
   SystemFontOption,
   TextModelConfig,
@@ -42,6 +46,10 @@ export const aiApi = {
     invoke<string>('generate_chapter', { input }),
   generateRevision: (input: GenerateRevisionInput) =>
     invoke<string>('generate_revision', { input }),
+  generateCharacterAppearance: (input: GenerateCharacterAppearanceInput) =>
+    invoke<CharacterAppearanceResult>('generate_character_appearance', { input }),
+  generateCharacterPortraitPrompt: (input: GenerateCharacterPortraitPromptInput) =>
+    invoke<CharacterPortraitPromptResult>('generate_character_portrait_prompt', { input }),
   generateImage: (input: GenerateImageInput) => invoke<string>('generate_image', { input }),
   testTextConnection: (textConfig: TextModelConfig) =>
     invoke<boolean>('test_text_connection', { textConfig }),

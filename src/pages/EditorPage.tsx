@@ -466,7 +466,7 @@ export function EditorPage() {
       const charactersInfo = characters.length > 0 
         ? characters.map((c, i) => {
             const isProtag = c.isProtagonist ? '【主角】' : '';
-            return `${i + 1}. ${c.name}${isProtag}\n   - 身份：${c.role || '未设定'}\n   - 性格：${c.personality || '未设定'}\n   - 背景：${c.background || '未设定'}\n   - 动机：${c.motivation || '未设定'}`;
+            return `${i + 1}. ${c.name}${isProtag}\n   - 身份：${c.role || '未设定'}\n   - 性格：${c.personality || '未设定'}\n   - 背景：${c.background || '未设定'}\n   - 动机：${c.motivation || '未设定'}\n   - 形象：${c.appearance || '未设定'}`;
           }).join('\n')
         : null;
 

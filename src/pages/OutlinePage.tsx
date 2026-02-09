@@ -305,6 +305,7 @@ export function OutlinePage() {
         if (char.personality) charactersPrompt += `，性格：${char.personality}`;
         if (char.background) charactersPrompt += `，背景：${char.background}`;
         if (char.motivation) charactersPrompt += `，动机：${char.motivation}`;
+        if (char.appearance) charactersPrompt += `，形象：${char.appearance}`;
         charactersPrompt += '\n';
       });
     }
@@ -464,6 +465,7 @@ export function OutlinePage() {
         personality: '',
         background: '',
         motivation: '',
+        appearance: '',
         isProtagonist: index === 0,
       };
 
@@ -481,6 +483,8 @@ export function OutlinePage() {
           char.background = value;
         } else if (lowerLine.includes('动机')) {
           char.motivation = value;
+        } else if (lowerLine.includes('形象')) {
+          char.appearance = value;
         }
       });
 

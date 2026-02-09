@@ -147,6 +147,36 @@ export interface GenerateRevisionInput {
   text_config: TextModelConfig;
 }
 
+export interface GenerateCharacterAppearanceInput {
+  name: string;
+  role?: string | null;
+  personality?: string | null;
+  background?: string | null;
+  motivation?: string | null;
+  style?: string | null;
+  text_config: TextModelConfig;
+}
+
+export interface CharacterAppearanceResult {
+  appearance: string;
+  image_prompt: string;
+}
+
+export interface GenerateCharacterPortraitPromptInput {
+  name: string;
+  appearance?: string | null;
+  role?: string | null;
+  personality?: string | null;
+  background?: string | null;
+  motivation?: string | null;
+  style?: string | null;
+  text_config: TextModelConfig;
+}
+
+export interface CharacterPortraitPromptResult {
+  image_prompt: string;
+}
+
 export interface ImageGenerationParams {
   prompt: string;
   width?: number;
