@@ -7,10 +7,34 @@ import type { Project } from '@typings/index';
 import { Button } from '@components/Button';
 import { ArrowLeft, Plus, Edit, Trash2, User, Save, Star, Sparkles } from 'lucide-react';
 import { confirmDialog } from '@utils/index';
+import { tx } from '@utils/i18n';
 
 const ONE_INCH_WIDTH = 500;
 const ONE_INCH_HEIGHT = 700;
 type StyleModalMode = 'appearance' | 'portrait';
+
+const isCharacterSectionHeadingLine = (line: string): boolean =>
+  /^\s*#{1,6}\s*(主要角色|Main Characters?)\s*$/i.test(line.trim());
+
+const isCharacterFieldLine = (line: string): boolean => {
+  const normalized = line.replace(/\*\*/g, '').trim();
+  return (
+    /(身份|性格|背景|动机|形象)\s*[：:]/.test(normalized) ||
+    /(role|personality|background|motivation|appearance)\s*[:：]/i.test(normalized)
+  );
+};
+
+const sanitizeCharacterName = (line: string): string =>
+  line
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[\d.\s]+/, '')
+    .replace(/^\s*[-*+]\s*/, '')
+    .replace(/\*\*/g, '')
+    .replace(/[：:]\s*$/, '')
+    .trim();
+
+const isInvalidCharacterName = (name: string): boolean =>
+  /^(主要角色|main characters?)$/i.test(name.trim());
 
 const normalizeCharacter = (raw: Partial<Character>, index = 0): Character => ({
   id: raw.id || `char-${Date.now()}-${index}`,
@@ -47,17 +71,28 @@ const buildCharactersMarkdown = (characters: Character[]): string =>
     .join('\n');
 
 const upsertCharacterSection = (originalOutline: string, charactersMarkdown: string): string => {
-  const sectionRegex = /## 主要角色[\s\S]*?(?=\n## |$)/;
+  const sectionRegex = /##\s*(主要角色|Main Characters?)\b[\s\S]*?(?=\n##\s|$)/i;
+  const headingMatch = originalOutline.match(/^##\s*(主要角色|Main Characters?)\b/im);
+  const sectionHeading =
+    headingMatch && /main characters?/i.test(headingMatch[0])
+      ? '## Main Characters'
+      : '## 主要角色';
   if (sectionRegex.test(originalOutline)) {
-    return originalOutline.replace(sectionRegex, `## 主要角色\n${charactersMarkdown}\n`);
+    return originalOutline.replace(sectionRegex, `${sectionHeading}\n${charactersMarkdown}\n`);
   }
-  return `## 主要角色\n${charactersMarkdown}\n\n${originalOutline}`;
+  return `${sectionHeading}\n${charactersMarkdown}\n\n${originalOutline}`;
 };
+
+const normalizeValidCharacters = (input: Character[]): Character[] =>
+  input
+    .filter((character) => !isInvalidCharacterName(character.name))
+    .map((character, index) => normalizeCharacter(character, index));
 
 export function CharactersPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const {
+    uiLanguage,
     currentProject,
     setCurrentProject,
     getCharacters,
@@ -100,12 +135,16 @@ export function CharactersPage() {
     if (!projectId) return;
     const storedCharacters = getCharacters(projectId);
     if (storedCharacters.length > 0) {
-      setCharacters(storedCharacters.map((char, index) => normalizeCharacter(char, index)));
+      const normalized = normalizeValidCharacters(storedCharacters);
+      setCharacters(normalized);
+      if (normalized.length !== storedCharacters.length) {
+        setStoreCharacters(projectId, normalized);
+      }
     }
-  }, [projectId, getCharacters]);
+  }, [projectId, getCharacters, setStoreCharacters]);
 
   const parseCharactersFromOutline = (outline: string): Character[] => {
-    const characterSection = outline.match(/##\s*主要角色[\s\S]*?(?=\n##\s|$)/i);
+    const characterSection = outline.match(/##\s*(主要角色|Main Characters?)\b[\s\S]*?(?=\n##\s|$)/i);
     if (!characterSection) {
       return [];
     }
@@ -113,20 +152,27 @@ export function CharactersPage() {
     const parsed: Character[] = [];
     const blocks = characterSection[0]
       .split(/\n###\s+/)
-      .filter((block) => block.trim() && !block.includes('主要角色'));
+      .filter(
+        (block) =>
+          block.trim() &&
+          !/^\s*(主要角色|Main Characters?)\s*$/i.test(block.trim())
+      );
 
     blocks.forEach((block, index) => {
-      const lines = block.trim().split('\n');
-      const nameLine = lines[0]?.trim() || '';
-      if (!nameLine) return;
+      const lines = block
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (lines.length === 0) return;
 
-      const name = nameLine
-        .replace(/^[\d.\s]+/, '')
-        .replace(/\*\*/g, '')
-        .replace(/^\s*[-*]\s*/, '')
-        .trim();
+      const candidateLine = lines.find(
+        (line) => !isCharacterSectionHeadingLine(line) && !isCharacterFieldLine(line)
+      );
+      if (!candidateLine) return;
 
-      if (!name) return;
+      const name = sanitizeCharacterName(candidateLine);
+      if (!name || isInvalidCharacterName(name)) return;
 
       const character: Character = {
         id: `char-${Date.now()}-${index}`,
@@ -138,7 +184,7 @@ export function CharactersPage() {
         appearance: '',
         portraitBase64: undefined,
         portraitPrompt: undefined,
-        isProtagonist: index === 0,
+        isProtagonist: parsed.length === 0,
       };
 
       lines.forEach((line) => {
@@ -146,15 +192,15 @@ export function CharactersPage() {
         const valueMatch = line.match(/[：:]\s*(.+)$/);
         const value = valueMatch ? valueMatch[1].replace(/\*\*/g, '').trim() : '';
 
-        if (lowerLine.includes('身份')) {
+        if (lowerLine.includes('身份') || lowerLine.includes('role')) {
           character.role = value;
-        } else if (lowerLine.includes('性格')) {
+        } else if (lowerLine.includes('性格') || lowerLine.includes('personality')) {
           character.personality = value;
-        } else if (lowerLine.includes('背景')) {
+        } else if (lowerLine.includes('背景') || lowerLine.includes('background')) {
           character.background = value;
-        } else if (lowerLine.includes('动机')) {
+        } else if (lowerLine.includes('动机') || lowerLine.includes('motivation')) {
           character.motivation = value;
-        } else if (lowerLine.includes('形象')) {
+        } else if (lowerLine.includes('形象') || lowerLine.includes('appearance')) {
           character.appearance = value;
         }
       });
@@ -162,7 +208,7 @@ export function CharactersPage() {
       parsed.push(character);
     });
 
-    return parsed;
+    return normalizeValidCharacters(parsed);
   };
 
   const loadData = async (pid: string) => {
@@ -172,7 +218,11 @@ export function CharactersPage() {
 
       const storedCharacters = getCharacters(pid);
       if (storedCharacters.length > 0) {
-        setCharacters(storedCharacters.map((char, index) => normalizeCharacter(char, index)));
+        const normalized = normalizeValidCharacters(storedCharacters);
+        setCharacters(normalized);
+        if (normalized.length !== storedCharacters.length) {
+          setStoreCharacters(pid, normalized);
+        }
       } else if (project?.description) {
         const parsed = parseCharactersFromOutline(project.description);
         if (parsed.length > 0) {
@@ -192,11 +242,11 @@ export function CharactersPage() {
       return currentProject;
     }
     if (!projectId) {
-      throw new Error('项目未加载');
+      throw new Error(tx(uiLanguage, '项目未加载', 'Project not loaded'));
     }
     const fetched = await projectApi.getById(projectId);
     if (!fetched) {
-      throw new Error('项目不存在');
+      throw new Error(tx(uiLanguage, '项目不存在', 'Project not found'));
     }
     setCurrentProject(fetched);
     return fetched;
@@ -204,7 +254,7 @@ export function CharactersPage() {
 
   const syncCharactersToOutline = async (nextCharacters: Character[]) => {
     if (!projectId) {
-      throw new Error('项目未加载');
+      throw new Error(tx(uiLanguage, '项目未加载', 'Project not loaded'));
     }
 
     const normalized = nextCharacters.map((char, index) => normalizeCharacter(char, index));
@@ -250,7 +300,10 @@ export function CharactersPage() {
   };
 
   const handleDeleteCharacter = async (charId: string) => {
-    const confirmed = await confirmDialog('确定要删除这个角色吗？', '删除角色');
+    const confirmed = await confirmDialog(
+      tx(uiLanguage, '确定要删除这个角色吗？', 'Delete this character?'),
+      tx(uiLanguage, '删除角色', 'Delete Character')
+    );
     if (!confirmed) return;
     setCharacters((prev) => prev.filter((char) => char.id !== charId));
     setHasChanges(true);
@@ -260,8 +313,8 @@ export function CharactersPage() {
     const isFirst = characters.length === 0;
     const newCharacter: Character = {
       id: `char-${Date.now()}`,
-      name: isFirst ? '主角名' : '新角色',
-      role: isFirst ? '主角' : '',
+      name: isFirst ? tx(uiLanguage, '主角名', 'Protagonist') : tx(uiLanguage, '新角色', 'New Character'),
+      role: isFirst ? tx(uiLanguage, '主角', 'Protagonist') : '',
       personality: '',
       background: '',
       motivation: '',
@@ -280,10 +333,10 @@ export function CharactersPage() {
     try {
       await syncCharactersToOutline(characters);
       setHasChanges(false);
-      alert('角色信息已保存！');
+      alert(tx(uiLanguage, '角色信息已保存！', 'Character info saved!'));
     } catch (error) {
       console.error('Failed to save characters:', error);
-      alert(typeof error === 'string' ? error : '保存失败');
+      alert(typeof error === 'string' ? error : tx(uiLanguage, '保存失败', 'Save failed'));
     }
   };
 
@@ -313,12 +366,18 @@ export function CharactersPage() {
 
     const target = characters.find((char) => char.id === appearanceTargetId);
     if (!target) {
-      setAppearanceError('目标角色不存在');
+      setAppearanceError(tx(uiLanguage, '目标角色不存在', 'Target character does not exist'));
       return;
     }
 
     if (!hasValidTextConfig) {
-      setAppearanceError('请先在设置页面配置文本模型的 API Key / API URL / 模型名称 / Temperature');
+      setAppearanceError(
+        tx(
+          uiLanguage,
+          '请先在设置页面配置文本模型的 API Key / API URL / 模型名称 / Temperature',
+          'Configure text model API Key / API URL / model / temperature in Settings first'
+        )
+      );
       return;
     }
 
@@ -353,11 +412,19 @@ export function CharactersPage() {
           const message =
             typeof error === 'string'
               ? error
-              : (error as Error)?.message || '未知错误';
-          portraitWarning = `人物形象文本已生成，但一寸照生成失败：${message}`;
+              : (error as Error)?.message || tx(uiLanguage, '未知错误', 'Unknown error');
+          portraitWarning = tx(
+            uiLanguage,
+            `人物形象文本已生成，但一寸照生成失败：${message}`,
+            `Appearance text generated, but portrait generation failed: ${message}`
+          );
         }
       } else {
-        portraitWarning = '未配置 Pollinations API Key，已跳过一寸照生成。';
+        portraitWarning = tx(
+          uiLanguage,
+          '未配置 Pollinations API Key，已跳过一寸照生成。',
+          'Pollinations API Key not configured, portrait generation skipped.'
+        );
       }
 
       const nextCharacters = characters.map((char) =>
@@ -378,13 +445,19 @@ export function CharactersPage() {
       setAppearanceTargetId(null);
 
       if (portraitWarning) {
-        alert(`人物形象已同步到大纲。${portraitWarning}`);
+        alert(
+          tx(
+            uiLanguage,
+            `人物形象已同步到大纲。${portraitWarning}`,
+            `Character appearance synced to outline. ${portraitWarning}`
+          )
+        );
       }
     } catch (error) {
       const message =
         typeof error === 'string'
           ? error
-          : (error as Error)?.message || '人物形象生成失败';
+          : (error as Error)?.message || tx(uiLanguage, '人物形象生成失败', 'Character appearance generation failed');
       setAppearanceError(message);
       setHasChanges(true);
     } finally {
@@ -397,17 +470,23 @@ export function CharactersPage() {
 
     const target = characters.find((char) => char.id === appearanceTargetId);
     if (!target) {
-      setAppearanceError('目标角色不存在');
+      setAppearanceError(tx(uiLanguage, '目标角色不存在', 'Target character does not exist'));
       return;
     }
 
     if (!hasPollinations) {
-      setAppearanceError('请先在设置页面配置 Pollinations API Key');
+      setAppearanceError(tx(uiLanguage, '请先在设置页面配置 Pollinations API Key', 'Configure Pollinations API Key in Settings first'));
       return;
     }
 
     if (!hasValidTextConfig) {
-      setAppearanceError('请先在设置页面配置文本模型的 API Key / API URL / 模型名称 / Temperature');
+      setAppearanceError(
+        tx(
+          uiLanguage,
+          '请先在设置页面配置文本模型的 API Key / API URL / 模型名称 / Temperature',
+          'Configure text model API Key / API URL / model / temperature in Settings first'
+        )
+      );
       return;
     }
 
@@ -452,7 +531,7 @@ export function CharactersPage() {
       const message =
         typeof error === 'string'
           ? error
-          : (error as Error)?.message || '一寸照重生成失败';
+          : (error as Error)?.message || tx(uiLanguage, '一寸照重生成失败', 'Portrait regeneration failed');
       setAppearanceError(message);
     } finally {
       setIsRegeneratingPortrait(false);
@@ -460,7 +539,7 @@ export function CharactersPage() {
   };
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full">加载中...</div>;
+    return <div className="flex items-center justify-center h-full">{tx(uiLanguage, '加载中...', 'Loading...')}</div>;
   }
 
   return (
@@ -472,40 +551,49 @@ export function CharactersPage() {
           className="whitespace-nowrap self-start"
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
-          返回
+          {tx(uiLanguage, '返回', 'Back')}
         </Button>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={handleAddCharacter} className="whitespace-nowrap">
             <Plus className="w-4 h-4 mr-1 md:mr-2" />
-            添加
+            {tx(uiLanguage, '添加', 'Add')}
           </Button>
           <Button onClick={handleSaveAll} disabled={!hasChanges} className="whitespace-nowrap">
             <Save className="w-4 h-4 mr-1 md:mr-2" />
-            保存{hasChanges ? '*' : ''}
+            {tx(uiLanguage, '保存', 'Save')}
+            {hasChanges ? '*' : ''}
           </Button>
         </div>
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">角色管理</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">{tx(uiLanguage, '角色管理', 'Character Management')}</h1>
         <p className="text-gray-600 dark:text-gray-400">
-          管理小说中的角色信息。可以先创建角色再生成大纲，AI会参考你设定的角色信息。
+          {tx(
+            uiLanguage,
+            '管理小说中的角色信息。可以先创建角色再生成大纲，AI会参考你设定的角色信息。',
+            'Manage characters in your novel. Create characters before generating outline so AI can follow your settings.'
+          )}
         </p>
         <p className="text-sm text-primary-600 dark:text-primary-400 mt-2">
-          点击“人物形象生成”可根据角色信息生成形象文本并同步到大纲；“重生一寸照”只更新照片，不会改动形象文本。
+          {tx(
+            uiLanguage,
+            '点击“人物形象生成”可根据角色信息生成形象文本并同步到大纲；“重生一寸照”只更新照片，不会改动形象文本。',
+            'Use "Generate Appearance" to create appearance text and sync it to outline; "Regenerate Portrait" only updates the photo.'
+          )}
         </p>
       </div>
 
       {characters.length === 0 ? (
         <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
           <User className="w-16 h-16 mx-auto text-gray-400 mb-4" />
-          <h3 className="text-xl font-medium text-gray-700 dark:text-gray-300 mb-2">暂无角色</h3>
+          <h3 className="text-xl font-medium text-gray-700 dark:text-gray-300 mb-2">{tx(uiLanguage, '暂无角色', 'No Characters')}</h3>
           <p className="text-gray-500 dark:text-gray-400 mb-4">
-            添加角色后，生成大纲时 AI 会参考这些角色设定
+            {tx(uiLanguage, '添加角色后，生成大纲时 AI 会参考这些角色设定', 'After adding characters, AI will use these settings when generating outline')}
           </p>
           <Button onClick={handleAddCharacter}>
             <Plus className="w-4 h-4 mr-2" />
-            添加第一个角色（主角）
+            {tx(uiLanguage, '添加第一个角色（主角）', 'Add first character (Protagonist)')}
           </Button>
         </div>
       ) : (
@@ -525,7 +613,7 @@ export function CharactersPage() {
                     {char.portraitBase64 ? (
                       <img
                         src={char.portraitBase64}
-                        alt={`${char.name} 形象`}
+                        alt={`${char.name} ${tx(uiLanguage, '形象', 'Portrait')}`}
                         className="w-full h-full object-cover"
                       />
                     ) : (
@@ -535,7 +623,7 @@ export function CharactersPage() {
                     )}
                   </div>
                   <p className="mt-2 text-xs text-center text-gray-500 dark:text-gray-400">
-                    人物一寸照
+                    {tx(uiLanguage, '人物一寸照', 'Character Portrait')}
                   </p>
                 </div>
 
@@ -545,7 +633,7 @@ export function CharactersPage() {
                       <div className="flex items-center space-x-4">
                         <div className="flex-1">
                           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            角色名称
+                            {tx(uiLanguage, '角色名称', 'Character Name')}
                           </label>
                           <input
                             type="text"
@@ -558,7 +646,7 @@ export function CharactersPage() {
                         </div>
                         <div className="flex-1">
                           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            身份定位
+                            {tx(uiLanguage, '身份定位', 'Role')}
                           </label>
                           <input
                             type="text"
@@ -567,14 +655,14 @@ export function CharactersPage() {
                               handleUpdateCharacter(char.id, 'role', event.target.value)
                             }
                             className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
-                            placeholder="如：主角、女主、导师、反派..."
+                            placeholder={tx(uiLanguage, '如：主角、女主、导师、反派...', 'e.g. Protagonist, Mentor, Antagonist...')}
                           />
                         </div>
                       </div>
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          性格特点
+                          {tx(uiLanguage, '性格特点', 'Personality')}
                         </label>
                         <input
                           type="text"
@@ -583,13 +671,13 @@ export function CharactersPage() {
                             handleUpdateCharacter(char.id, 'personality', event.target.value)
                           }
                           className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
-                          placeholder="如：沉稳、机智、热血、冷漠..."
+                          placeholder={tx(uiLanguage, '如：沉稳、机智、热血、冷漠...', 'e.g. Calm, Smart, Passionate, Cold...')}
                         />
                       </div>
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          背景故事
+                          {tx(uiLanguage, '背景故事', 'Background')}
                         </label>
                         <textarea
                           value={char.background}
@@ -597,13 +685,13 @@ export function CharactersPage() {
                             handleUpdateCharacter(char.id, 'background', event.target.value)
                           }
                           className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-20 resize-none"
-                          placeholder="角色的出身、经历、秘密..."
+                          placeholder={tx(uiLanguage, '角色的出身、经历、秘密...', 'Origin, experiences, secrets...')}
                         />
                       </div>
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          动机目标
+                          {tx(uiLanguage, '动机目标', 'Motivation')}
                         </label>
                         <textarea
                           value={char.motivation}
@@ -611,13 +699,13 @@ export function CharactersPage() {
                             handleUpdateCharacter(char.id, 'motivation', event.target.value)
                           }
                           className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-20 resize-none"
-                          placeholder="角色想要达成的目标，驱动他行动的原因..."
+                          placeholder={tx(uiLanguage, '角色想要达成的目标，驱动他行动的原因...', 'Goals and reasons that drive this character...')}
                         />
                       </div>
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                          形象
+                          {tx(uiLanguage, '形象', 'Appearance')}
                         </label>
                         <textarea
                           value={char.appearance || ''}
@@ -625,7 +713,11 @@ export function CharactersPage() {
                             handleUpdateCharacter(char.id, 'appearance', event.target.value)
                           }
                           className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-24 resize-none"
-                          placeholder="可手动填写，或点击“人物形象生成”自动生成"
+                          placeholder={tx(
+                            uiLanguage,
+                            '可手动填写，或点击“人物形象生成”自动生成',
+                            'Manual input, or click "Generate Appearance"'
+                          )}
                         />
                       </div>
 
@@ -638,7 +730,7 @@ export function CharactersPage() {
                           className="whitespace-nowrap"
                         >
                           <Sparkles className="w-4 h-4 mr-1" />
-                          人物形象生成
+                          {tx(uiLanguage, '人物形象生成', 'Generate Appearance')}
                         </Button>
                         <Button
                           variant="outline"
@@ -647,9 +739,9 @@ export function CharactersPage() {
                           disabled={isGeneratingAppearance || isRegeneratingPortrait}
                           className="whitespace-nowrap"
                         >
-                          重生一寸照
+                          {tx(uiLanguage, '重生一寸照', 'Regenerate Portrait')}
                         </Button>
-                        <Button onClick={() => setEditingId(null)}>完成编辑</Button>
+                        <Button onClick={() => setEditingId(null)}>{tx(uiLanguage, '完成编辑', 'Done')}</Button>
                       </div>
                     </div>
                   ) : (
@@ -663,7 +755,7 @@ export function CharactersPage() {
                                 ? 'text-yellow-500'
                                 : 'text-gray-300 hover:text-yellow-400'
                             }`}
-                            title={char.isProtagonist ? '主角' : '设为主角'}
+                            title={char.isProtagonist ? tx(uiLanguage, '主角', 'Protagonist') : tx(uiLanguage, '设为主角', 'Set as Protagonist')}
                           >
                             <Star className={`w-5 h-5 ${char.isProtagonist ? 'fill-current' : ''}`} />
                           </button>
@@ -695,7 +787,7 @@ export function CharactersPage() {
                             className="whitespace-nowrap"
                           >
                             <Sparkles className="w-4 h-4 mr-1" />
-                            人物形象生成
+                            {tx(uiLanguage, '人物形象生成', 'Generate Appearance')}
                           </Button>
                           <Button
                             variant="outline"
@@ -705,7 +797,7 @@ export function CharactersPage() {
                             disabled={isGeneratingAppearance || isRegeneratingPortrait}
                             className="whitespace-nowrap"
                           >
-                            重生一寸照
+                            {tx(uiLanguage, '重生一寸照', 'Regenerate Portrait')}
                           </Button>
                           <Button variant="ghost" size="sm" onClick={() => setEditingId(char.id)}>
                             <Edit className="w-4 h-4" />
@@ -724,31 +816,31 @@ export function CharactersPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                         {char.personality && (
                           <div>
-                            <span className="font-medium text-gray-700 dark:text-gray-300">性格：</span>
+                            <span className="font-medium text-gray-700 dark:text-gray-300">{tx(uiLanguage, '性格：', 'Personality:')}</span>
                             <span className="text-gray-600 dark:text-gray-400">{char.personality}</span>
                           </div>
                         )}
                         {char.background && (
                           <div>
-                            <span className="font-medium text-gray-700 dark:text-gray-300">背景：</span>
+                            <span className="font-medium text-gray-700 dark:text-gray-300">{tx(uiLanguage, '背景：', 'Background:')}</span>
                             <span className="text-gray-600 dark:text-gray-400">{char.background}</span>
                           </div>
                         )}
                         {char.motivation && (
                           <div className="md:col-span-2">
-                            <span className="font-medium text-gray-700 dark:text-gray-300">动机：</span>
+                            <span className="font-medium text-gray-700 dark:text-gray-300">{tx(uiLanguage, '动机：', 'Motivation:')}</span>
                             <span className="text-gray-600 dark:text-gray-400">{char.motivation}</span>
                           </div>
                         )}
                         {char.appearance && (
                           <div className="md:col-span-2">
-                            <span className="font-medium text-gray-700 dark:text-gray-300">形象：</span>
+                            <span className="font-medium text-gray-700 dark:text-gray-300">{tx(uiLanguage, '形象：', 'Appearance:')}</span>
                             <span className="text-gray-600 dark:text-gray-400">{char.appearance}</span>
                           </div>
                         )}
                         {!char.personality && !char.background && !char.motivation && !char.appearance && (
                           <p className="text-gray-400 dark:text-gray-500 italic">
-                            点击编辑按钮添加详细信息，或使用“人物形象生成”
+                            {tx(uiLanguage, '点击编辑按钮添加详细信息，或使用“人物形象生成”', 'Click edit to add details, or use "Generate Appearance"')}
                           </p>
                         )}
                       </div>
@@ -765,17 +857,27 @@ export function CharactersPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
             <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">
-              {styleModalMode === 'appearance' ? '人物形象生成' : '重生人物一寸照'}
+              {styleModalMode === 'appearance'
+                ? tx(uiLanguage, '人物形象生成', 'Generate Appearance')
+                : tx(uiLanguage, '重生人物一寸照', 'Regenerate Portrait')}
             </h2>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
               {styleModalMode === 'appearance'
-                ? '将基于角色名称、身份、性格、背景、动机生成“形象”文本，并同步到大纲中。'
-                : '仅重新生成人物一寸照，不会改动角色“形象”文本。'}
+                ? tx(
+                  uiLanguage,
+                  '将基于角色名称、身份、性格、背景、动机生成“形象”文本，并同步到大纲中。',
+                  'Generate appearance text from name, role, personality, background, and motivation, then sync to outline.'
+                )
+                : tx(
+                  uiLanguage,
+                  '仅重新生成人物一寸照，不会改动角色“形象”文本。',
+                  'Only regenerate portrait image, without changing appearance text.'
+                )}
             </p>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                图片风格
+                {tx(uiLanguage, '图片风格', 'Image Style')}
               </label>
               <input
                 type="text"
@@ -783,7 +885,7 @@ export function CharactersPage() {
                 value={appearanceStyle}
                 onChange={(event) => setAppearanceStyle(event.target.value)}
                 className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
-                placeholder="选择或输入风格（支持中文）"
+                placeholder={tx(uiLanguage, '选择或输入风格（支持中文）', 'Select or input style')}
               />
               <datalist id="character-style-options">
                 <option value="cinematic" />
@@ -793,16 +895,28 @@ export function CharactersPage() {
             </div>
 
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
-              支持手动输入风格，系统会将风格转化并融合为英文提示词。
+              {tx(
+                uiLanguage,
+                '支持手动输入风格，系统会将风格转化并融合为英文提示词。',
+                'Manual style is supported and will be converted into English prompt terms.'
+              )}
             </p>
             {!hasPollinations && styleModalMode === 'appearance' && (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                未配置 Pollinations API Key：本次仅生成人物形象文本，不会生成一寸照。
+                {tx(
+                  uiLanguage,
+                  '未配置 Pollinations API Key：本次仅生成人物形象文本，不会生成一寸照。',
+                  'Pollinations API Key not configured: only appearance text will be generated, no portrait image.'
+                )}
               </p>
             )}
             {!hasPollinations && styleModalMode === 'portrait' && (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                请先在设置页面配置 Pollinations API Key，否则无法重生一寸照。
+                {tx(
+                  uiLanguage,
+                  '请先在设置页面配置 Pollinations API Key，否则无法重生一寸照。',
+                  'Configure Pollinations API Key in Settings first, otherwise portrait cannot be regenerated.'
+                )}
               </p>
             )}
             {appearanceError && (
@@ -820,7 +934,7 @@ export function CharactersPage() {
                 }}
                 className="flex-1"
               >
-                取消
+                {tx(uiLanguage, '取消', 'Cancel')}
               </Button>
               <Button
                 onClick={() =>
@@ -831,7 +945,9 @@ export function CharactersPage() {
                 loading={styleModalMode === 'appearance' ? isGeneratingAppearance : isRegeneratingPortrait}
                 className="flex-1"
               >
-                {styleModalMode === 'appearance' ? '生成' : '重生'}
+                {styleModalMode === 'appearance'
+                  ? tx(uiLanguage, '生成', 'Generate')
+                  : tx(uiLanguage, '重生', 'Regenerate')}
               </Button>
             </div>
           </div>

@@ -8,6 +8,8 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { tx } from '@utils/i18n';
+import { alertDialog } from '@utils/index';
 
 interface OutlineLine {
   id: string;
@@ -15,11 +17,34 @@ interface OutlineLine {
   type: 'heading' | 'text' | 'blank';
 }
 
+const isCharacterSectionHeadingLine = (line: string): boolean =>
+  /^\s*#{1,6}\s*(主要角色|Main Characters?)\s*$/i.test(line.trim());
+
+const isCharacterFieldLine = (line: string): boolean => {
+  const normalized = line.replace(/\*\*/g, '').trim();
+  return (
+    /(身份|性格|背景|动机|形象)\s*[：:]/.test(normalized) ||
+    /(role|personality|background|motivation|appearance)\s*[:：]/i.test(normalized)
+  );
+};
+
+const sanitizeCharacterName = (line: string): string =>
+  line
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[\d.\s]+/, '')
+    .replace(/^\s*[-*+]\s*/, '')
+    .replace(/\*\*/g, '')
+    .replace(/[：:]\s*$/, '')
+    .trim();
+
+const isInvalidCharacterName = (name: string): boolean =>
+  /^(主要角色|main characters?)$/i.test(name.trim());
+
 export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { 
-    currentProject, setCurrentProject, textModelConfig, 
+    currentProject, setCurrentProject, textModelConfig, uiLanguage,
     getCharacters, setCharacters,
     setWorldSetting, setTimeline 
   } = useAppStore();
@@ -279,12 +304,12 @@ export function OutlinePage() {
 
   const handleGenerate = async () => {
     if (!hasValidTextConfig) {
-      setError('请先在设置页面配置 DeepSeek API 密钥');
+      setError(tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
 
     if (!currentProject) {
-      setError('项目信息未加载');
+      setError(tx(uiLanguage, '项目信息未加载', 'Project data not loaded'));
       return;
     }
 
@@ -328,6 +353,7 @@ export function OutlinePage() {
           target_chapters: chapterCount,
           text_config: textModelConfig,
           requirements: fullRequirements || undefined,
+          output_language: currentProject.language || 'zh',
         }
       });
 
@@ -338,7 +364,9 @@ export function OutlinePage() {
 
       unlisten();
     } catch (err) {
-      const errorMessage = typeof err === 'string' ? err : (err as Error)?.message || '生成失败';
+      const errorMessage = typeof err === 'string'
+        ? err
+        : (err as Error)?.message || tx(uiLanguage, '生成失败', 'Generation failed');
       if (!errorMessage.includes('cancelled') && !errorMessage.includes('中断')) {
         setError(errorMessage);
       }
@@ -411,14 +439,45 @@ export function OutlinePage() {
       const { created, updated } = await syncChaptersFromOutline(outlineToSave);
       if (created > 0 || updated > 0) {
         const parts = [];
-        if (created > 0) parts.push(`创建 ${created} 个章节`);
-        if (updated > 0) parts.push(`更新 ${updated} 个章节预览`);
-        alert(`大纲已保存，${parts.join('，')}`);
+        if (created > 0) {
+          parts.push(
+            tx(
+              uiLanguage,
+              `创建 ${created} 个章节`,
+              `created ${created} chapter${created > 1 ? 's' : ''}`
+            )
+          );
+        }
+        if (updated > 0) {
+          parts.push(
+            tx(
+              uiLanguage,
+              `更新 ${updated} 个章节预览`,
+              `updated ${updated} chapter preview${updated > 1 ? 's' : ''}`
+            )
+          );
+        }
+        await alertDialog(
+          tx(
+            uiLanguage,
+            `大纲已保存，${parts.join('，')}`,
+            `Outline saved, ${parts.join(', ')}`
+          ),
+          tx(uiLanguage, '提示', 'Notice'),
+          tx(uiLanguage, '确定', 'OK')
+        );
       } else {
-        alert('大纲已保存！');
+        await alertDialog(
+          tx(uiLanguage, '大纲已保存！', 'Outline saved!'),
+          tx(uiLanguage, '提示', 'Notice'),
+          tx(uiLanguage, '确定', 'OK')
+        );
       }
     } catch (err) {
-      setError('保存失败: ' + ((err as Error)?.message || '未知错误'));
+      setError(
+        tx(uiLanguage, '保存失败: ', 'Save failed: ') +
+        ((err as Error)?.message || tx(uiLanguage, '未知错误', 'Unknown error'))
+      );
     }
   };
 
@@ -428,7 +487,7 @@ export function OutlinePage() {
     console.log('大纲内容长度:', outlineText.length);
     
     // 匹配 "## 主要角色" 部分（支持中英文标题）
-    const characterSection = outlineText.match(/##\s*主要角色[\s\S]*?(?=\n##\s|$)/i);
+    const characterSection = outlineText.match(/##\s*(主要角色|Main Characters?)\b[\s\S]*?(?=\n##\s|$)/i);
     if (!characterSection) {
       console.log('未找到主要角色部分');
       return [];
@@ -438,25 +497,34 @@ export function OutlinePage() {
 
     const parsed: Character[] = [];
     // 按 ### 分割角色块
-    const blocks = characterSection[0].split(/\n###\s+/).filter(block => block.trim() && !block.includes('主要角色'));
+    const blocks = characterSection[0]
+      .split(/\n###\s+/)
+      .filter(
+        block =>
+          block.trim() &&
+          !/^\s*(主要角色|Main Characters?)\s*$/i.test(block.trim())
+      );
     
     console.log('角色块数量:', blocks.length);
     
     blocks.forEach((block, index) => {
-      const lines = block.trim().split('\n');
-      const nameLine = lines[0]?.trim() || '';
-      if (!nameLine) return;
+      const lines = block
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (lines.length === 0) return;
 
-      // 清理名字：移除序号、星号等
-      const name = nameLine
-        .replace(/^[\d.\s]+/, '')      // 移除开头的数字和点
-        .replace(/\*\*/g, '')          // 移除 Markdown 加粗符号
-        .replace(/^\s*[-*]\s*/, '')    // 移除列表符号
-        .trim();
+      const candidateLine = lines.find(
+        line => !isCharacterSectionHeadingLine(line) && !isCharacterFieldLine(line)
+      );
+      if (!candidateLine) return;
+
+      const name = sanitizeCharacterName(candidateLine);
       
-      console.log(`解析角色 ${index + 1}: 原始="${nameLine}", 清理后="${name}"`);
+      console.log(`解析角色 ${index + 1}: 原始="${candidateLine}", 清理后="${name}"`);
       
-      if (!name) return;
+      if (!name || isInvalidCharacterName(name)) return;
 
       const char: Character = {
         id: `char-${Date.now()}-${index}`,
@@ -466,7 +534,7 @@ export function OutlinePage() {
         background: '',
         motivation: '',
         appearance: '',
-        isProtagonist: index === 0,
+        isProtagonist: parsed.length === 0,
       };
 
       lines.forEach(line => {
@@ -475,15 +543,15 @@ export function OutlinePage() {
         const valueMatch = line.match(/[：:]\s*(.+)$/);
         const value = valueMatch ? valueMatch[1].replace(/\*\*/g, '').trim() : '';
         
-        if (lowerLine.includes('身份')) {
+        if (lowerLine.includes('身份') || lowerLine.includes('role')) {
           char.role = value;
-        } else if (lowerLine.includes('性格')) {
+        } else if (lowerLine.includes('性格') || lowerLine.includes('personality')) {
           char.personality = value;
-        } else if (lowerLine.includes('背景')) {
+        } else if (lowerLine.includes('背景') || lowerLine.includes('background')) {
           char.background = value;
-        } else if (lowerLine.includes('动机')) {
+        } else if (lowerLine.includes('动机') || lowerLine.includes('motivation')) {
           char.motivation = value;
-        } else if (lowerLine.includes('形象')) {
+        } else if (lowerLine.includes('形象') || lowerLine.includes('appearance')) {
           char.appearance = value;
         }
       });
@@ -501,7 +569,7 @@ export function OutlinePage() {
   // 从大纲解析世界观设定
   const parseWorldSettingFromOutline = (outlineText: string): string => {
     // 匹配 "## 世界观设定" 部分
-    const worldSection = outlineText.match(/##\s*世界观设定[\s\S]*?(?=\n##\s|$)/i);
+    const worldSection = outlineText.match(/##\s*(世界观设定|World Building)\b[\s\S]*?(?=\n##\s|$)/i);
     if (!worldSection) {
       console.log('未找到世界观设定部分');
       return '';
@@ -512,7 +580,7 @@ export function OutlinePage() {
   // 从大纲解析时间线事件
   const parseTimelineFromOutline = (outlineText: string): string => {
     // 匹配 "## 时间线事件" 部分
-    const timelineSection = outlineText.match(/##\s*时间线事件[\s\S]*?(?=\n##\s|$)/i);
+    const timelineSection = outlineText.match(/##\s*(时间线事件|Timeline Events)\b[\s\S]*?(?=\n##\s|$)/i);
     if (!timelineSection) {
       console.log('未找到时间线事件部分');
       return '';
@@ -521,6 +589,10 @@ export function OutlinePage() {
   };
 
   const parseChaptersFromOutline = (outlineText: string) => {
+    const outputLanguage = currentProject?.language === 'en' ? 'en' : 'zh';
+    const timeLabel = outputLanguage === 'en' ? 'Time' : '时间';
+    const goalLabel = outputLanguage === 'en' ? 'Goal' : '目标';
+    const hookLabel = outputLanguage === 'en' ? 'Hook' : '结尾钩子';
     const chapterPatterns = [
       /^###\s*第(\d+)章[：:]\s*(.+?)$/gm,
       /^###\s*第(\d+)章\s+(.+?)$/gm,
@@ -570,9 +642,9 @@ export function OutlinePage() {
         }
 
         const fullGoal = [
-          time ? `时间：${time}` : '',
-          goal ? `目标：${goal}` : '',
-          hook ? `结尾钩子：${hook}` : '',
+          time ? `${timeLabel}：${time}` : '',
+          goal ? `${goalLabel}：${goal}` : '',
+          hook ? `${hookLabel}：${hook}` : '',
         ]
           .filter(Boolean)
           .join('\n');
@@ -643,17 +715,17 @@ export function OutlinePage() {
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 min-w-0">
           <Button variant="ghost" onClick={() => navigate(`/project/${id}`)} className="whitespace-nowrap self-start">
             <ArrowLeft className="w-4 h-4 mr-2" />
-            返回
+            {tx(uiLanguage, '返回', 'Back')}
           </Button>
           <h2 className="text-lg md:text-xl font-semibold text-gray-900 dark:text-white truncate">
-            {currentProject.title} - 大纲
+            {currentProject.title} - {tx(uiLanguage, '大纲', 'Outline')}
           </h2>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {isSaved && (
             <span className="flex items-center text-green-600 dark:text-green-400 text-sm whitespace-nowrap">
               <Check className="w-4 h-4 mr-1" />
-              已保存
+              {tx(uiLanguage, '已保存', 'Saved')}
             </span>
           )}
           {outline && (
@@ -664,13 +736,15 @@ export function OutlinePage() {
               className="whitespace-nowrap"
             >
               <Edit3 className="w-4 h-4 mr-1 md:mr-2" />
-              {isEditingOutline ? '退出编辑' : '编辑大纲'}
+              {isEditingOutline
+                ? tx(uiLanguage, '退出编辑', 'Exit Edit')
+                : tx(uiLanguage, '编辑大纲', 'Edit Outline')}
             </Button>
           )}
           {outline && !isGenerating && (
             <Button onClick={handleSave} disabled={isSaved} className="whitespace-nowrap">
               <Save className="w-4 h-4 mr-1 md:mr-2" />
-              保存
+              {tx(uiLanguage, '保存', 'Save')}
             </Button>
           )}
         </div>
@@ -681,7 +755,7 @@ export function OutlinePage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              目标章节数
+              {tx(uiLanguage, '目标章节数', 'Target Chapters')}
             </label>
             <input
               type="number"
@@ -695,13 +769,17 @@ export function OutlinePage() {
           </div>
           <div className="md:col-span-2">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              特殊要求（可选）
+              {tx(uiLanguage, '特殊要求（可选）', 'Special Requirements (Optional)')}
             </label>
             <input
               type="text"
               value={requirements}
               onChange={(e) => setRequirements(e.target.value)}
-              placeholder="例如：需要包含多条支线剧情、主角要有重大转折..."
+               placeholder={tx(
+                 uiLanguage,
+                 '例如：需要包含多条支线剧情、主角要有重大转折...',
+                 'e.g. Include multiple side arcs and a major protagonist turning point...'
+               )}
               className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
               disabled={isGenerating}
             />
@@ -712,12 +790,14 @@ export function OutlinePage() {
           {isGenerating ? (
             <Button onClick={handleStop} variant="outline" className="bg-red-50 border-red-300 text-red-600 hover:bg-red-100">
               <StopCircle className="w-4 h-4 mr-2" />
-              停止生成
+              {tx(uiLanguage, '停止生成', 'Stop')}
             </Button>
           ) : (
             <Button onClick={handleGenerate}>
               <Sparkles className="w-4 h-4 mr-2" />
-              {outline ? '重新生成' : '开始生成大纲'}
+              {outline
+                ? tx(uiLanguage, '重新生成', 'Regenerate')
+                : tx(uiLanguage, '开始生成大纲', 'Generate Outline')}
             </Button>
           )}
         </div>
@@ -738,19 +818,21 @@ export function OutlinePage() {
         {!outline && !isGenerating ? (
           <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <Sparkles className="w-12 h-12 mb-4 opacity-50" />
-            <p className="text-lg">点击上方按钮开始生成大纲</p>
-            <p className="text-sm mt-2">AI将根据项目信息生成详细的章节大纲</p>
+            <p className="text-lg">{tx(uiLanguage, '点击上方按钮开始生成大纲', 'Click the button above to generate an outline')}</p>
+            <p className="text-sm mt-2">
+              {tx(uiLanguage, 'AI将根据项目信息生成详细的章节大纲', 'AI will generate a detailed chapter outline from project data')}
+            </p>
           </div>
         ) : isEditingOutline ? (
           <div className="space-y-3">
             {isGenerating && (
               <div className="flex items-center mb-2 text-primary-600 dark:text-primary-400">
                 <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                <span>正在生成中...</span>
+                <span>{tx(uiLanguage, '正在生成中...', 'Generating...')}</span>
               </div>
             )}
             <div className="text-xs text-gray-500 dark:text-gray-400">
-              标题已锁定不可修改，正文与条目可编辑
+              {tx(uiLanguage, '标题已锁定不可修改，正文与条目可编辑', 'Headings are locked. Body text and items are editable.')}
             </div>
             {outlineLines.map((line, index) => {
               if (line.type === 'blank') {
@@ -776,9 +858,9 @@ export function OutlinePage() {
                         onClick={() => addOutlineItem(index)}
                         className="ml-auto bg-green-600 hover:bg-green-700 text-white focus:ring-green-500"
                       >
-                        <Plus className="w-4 h-4 mr-1 text-white" />
-                        添加条目
-                      </Button>
+                         <Plus className="w-4 h-4 mr-1 text-white" />
+                         {tx(uiLanguage, '添加条目', 'Add Item')}
+                       </Button>
                     )}
                   </div>
                 );
@@ -801,7 +883,7 @@ export function OutlinePage() {
                           item.separatorSpace
                         )
                       }
-                      placeholder="条目"
+                       placeholder={tx(uiLanguage, '条目', 'Item')}
                       disabled={isGenerating}
                       className="w-full md:w-24 flex-shrink-0 px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-200"
                     />
@@ -829,7 +911,7 @@ export function OutlinePage() {
                         onClick={() => removeOutlineItem(line.id)}
                         disabled={isGenerating}
                         className="h-9 px-2 text-red-600 hover:text-red-700"
-                        title="删除条目"
+                        title={tx(uiLanguage, '删除条目', 'Delete Item')}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -856,7 +938,7 @@ export function OutlinePage() {
             {isGenerating && (
               <div className="flex items-center mb-4 text-primary-600 dark:text-primary-400">
                 <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                <span>正在生成中...</span>
+                <span>{tx(uiLanguage, '正在生成中...', 'Generating...')}</span>
               </div>
             )}
             <ReactMarkdown remarkPlugins={[remarkGfm]}>

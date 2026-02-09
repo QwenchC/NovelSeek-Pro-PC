@@ -4,6 +4,7 @@ import { aiApi } from '@services/api';
 import { Button } from '@components/Button';
 import type { TextModelConfig, TextModelProfile, TextModelProvider } from '@typings/index';
 import { CheckCircle, ExternalLink, Eye, EyeOff, Image, Key, Plus, Trash2, XCircle } from 'lucide-react';
+import { tx } from '@utils/i18n';
 
 type Status = 'idle' | 'testing' | 'success' | 'error';
 
@@ -38,7 +39,11 @@ function toTextConfig(profile: TextModelProfile): TextModelConfig {
   };
 }
 
-function createCustomProfile(profiles: TextModelProfile[], inputName: string): TextModelProfile {
+function createCustomProfile(
+  profiles: TextModelProfile[],
+  inputName: string,
+  defaultNamePrefix: string
+): TextModelProfile {
   let idx = profiles.length + 1;
   let id = `custom-${idx}`;
   while (profiles.some((profile) => profile.id === id)) {
@@ -47,7 +52,7 @@ function createCustomProfile(profiles: TextModelProfile[], inputName: string): T
   }
 
   const customCount = profiles.filter((profile) => !profile.builtIn).length + 1;
-  const name = inputName.trim() || `自定义平台 ${customCount}`;
+  const name = inputName.trim() || `${defaultNamePrefix} ${customCount}`;
 
   return {
     id,
@@ -72,6 +77,7 @@ function normalizeProfile(profile: TextModelProfile): TextModelProfile {
 
 export function SettingsPage() {
   const {
+    uiLanguage,
     textModelProfiles,
     activeTextModelProfileId,
     pollinationsKey,
@@ -124,7 +130,7 @@ export function SettingsPage() {
   };
 
   const addCustomPlatform = () => {
-    const next = createCustomProfile(localProfiles, newPlatformName);
+    const next = createCustomProfile(localProfiles, newPlatformName, tx(uiLanguage, '自定义平台', 'Custom Platform'));
     setLocalProfiles((prev) => [...prev, next]);
     setLocalActiveProfileId(next.id);
     setNewPlatformName('');
@@ -144,7 +150,13 @@ export function SettingsPage() {
 
   const testTextModel = async () => {
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
-      alert('请完整填写当前平台配置：API Key、API URL、模型、Temperature');
+      alert(
+        tx(
+          uiLanguage,
+          '请完整填写当前平台配置：API Key、API URL、模型、Temperature',
+          'Please complete API Key, API URL, model, and temperature for current platform'
+        )
+      );
       return;
     }
 
@@ -169,7 +181,13 @@ export function SettingsPage() {
 
   const saveSettings = () => {
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
-      alert('请完整填写当前平台配置：API Key、API URL、模型、Temperature');
+      alert(
+        tx(
+          uiLanguage,
+          '请完整填写当前平台配置：API Key、API URL、模型、Temperature',
+          'Please complete API Key, API URL, model, and temperature for current platform'
+        )
+      );
       return;
     }
 
@@ -178,7 +196,7 @@ export function SettingsPage() {
       normalizedProfiles.find((profile) => profile.id === localActiveProfileId) ||
       normalizedProfiles[0];
     if (!normalizedActive) {
-      alert('未找到可用平台配置');
+      alert(tx(uiLanguage, '未找到可用平台配置', 'No available platform configuration found'));
       return;
     }
 
@@ -187,18 +205,18 @@ export function SettingsPage() {
     setTextModelConfig(toTextConfig(normalizedActive));
     setPollinationsKey(localPollinationsKey.trim());
 
-    alert('设置已保存');
+    alert(tx(uiLanguage, '设置已保存', 'Settings saved'));
   };
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-8">设置</h1>
+      <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-8">{tx(uiLanguage, '设置', 'Settings')}</h1>
 
       <div className="space-y-6">
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <div className="flex items-center space-x-2 mb-4">
             <Key className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">文本模型平台</h2>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">{tx(uiLanguage, '文本模型平台', 'Text Model Platforms')}</h2>
           </div>
 
           {activeProfile ? (
@@ -206,7 +224,7 @@ export function SettingsPage() {
               <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    平台列表
+                    {tx(uiLanguage, '平台列表', 'Platform List')}
                   </label>
                   <select
                     value={localActiveProfileId}
@@ -216,32 +234,32 @@ export function SettingsPage() {
                     {localProfiles.map((profile) => (
                       <option key={profile.id} value={profile.id}>
                         {profile.name}
-                        {profile.builtIn ? '（内置）' : ''}
+                        {profile.builtIn ? tx(uiLanguage, '（内置）', ' (Built-in)') : ''}
                       </option>
                     ))}
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    新增自定义平台
+                    {tx(uiLanguage, '新增自定义平台', 'Add Custom Platform')}
                   </label>
                   <div className="flex gap-2">
                     <input
                       value={newPlatformName}
                       onChange={(event) => setNewPlatformName(event.target.value)}
-                      placeholder="平台名称（可选）"
+                      placeholder={tx(uiLanguage, '平台名称（可选）', 'Platform Name (Optional)')}
                       className="flex-1 px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
                     />
                     <Button onClick={addCustomPlatform} className="px-3 whitespace-nowrap">
                       <Plus className="w-4 h-4 mr-1" />
-                      新增
+                      {tx(uiLanguage, '新增', 'Add')}
                     </Button>
                   </div>
                 </div>
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-base font-medium text-gray-900 dark:text-white">当前平台配置</h3>
+                <h3 className="text-base font-medium text-gray-900 dark:text-white">{tx(uiLanguage, '当前平台配置', 'Current Platform Configuration')}</h3>
                 {!activeProfile.builtIn && (
                   <button
                     type="button"
@@ -249,26 +267,26 @@ export function SettingsPage() {
                     className="inline-flex items-center px-3 py-1.5 text-sm rounded-lg border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950/30"
                   >
                     <Trash2 className="w-4 h-4 mr-1" />
-                    删除当前自定义平台
+                    {tx(uiLanguage, '删除当前自定义平台', 'Delete Current Custom Platform')}
                   </button>
                 )}
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  平台名称
+                  {tx(uiLanguage, '平台名称', 'Platform Name')}
                 </label>
                 <input
                   value={activeProfile.name}
                   onChange={(event) => updateActiveProfile({ name: event.target.value })}
-                  placeholder="例如：OpenAI生产环境"
+                  placeholder={tx(uiLanguage, '例如：OpenAI生产环境', 'e.g. OpenAI Production')}
                   className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  平台类型
+                  {tx(uiLanguage, '平台类型', 'Platform Type')}
                 </label>
                 <select
                   value={activeProfile.provider}
@@ -280,8 +298,8 @@ export function SettingsPage() {
                   <option value="deepseek">DeepSeek</option>
                   <option value="openai">OpenAI</option>
                   <option value="openrouter">OpenRouter</option>
-                  <option value="gemini">Gemini(OpenAI兼容)</option>
-                  <option value="custom">自定义(OpenAI兼容)</option>
+                  <option value="gemini">{tx(uiLanguage, 'Gemini(OpenAI兼容)', 'Gemini (OpenAI Compatible)')}</option>
+                  <option value="custom">{tx(uiLanguage, '自定义(OpenAI兼容)', 'Custom (OpenAI Compatible)')}</option>
                 </select>
               </div>
 
@@ -297,7 +315,7 @@ export function SettingsPage() {
                       rel="noreferrer"
                       className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
                     >
-                      获取密钥
+                      {tx(uiLanguage, '获取密钥', 'Get Key')}
                       <ExternalLink className="w-3 h-3 ml-1" />
                     </a>
                   )}
@@ -307,14 +325,14 @@ export function SettingsPage() {
                     type={showTextKey ? 'text' : 'password'}
                     value={activeProfile.apiKey}
                     onChange={(event) => updateActiveProfile({ apiKey: event.target.value })}
-                    placeholder="请输入 API Key"
+                    placeholder={tx(uiLanguage, '请输入 API Key', 'Enter API Key')}
                     className="w-full px-3 py-2 pr-11 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
                   />
                   <button
                     type="button"
                     onClick={() => setShowTextKey((prev) => !prev)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                    title={showTextKey ? '隐藏密钥' : '显示密钥'}
+                    title={showTextKey ? tx(uiLanguage, '隐藏密钥', 'Hide Key') : tx(uiLanguage, '显示密钥', 'Show Key')}
                   >
                     {showTextKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -328,26 +346,26 @@ export function SettingsPage() {
                 <input
                   value={activeProfile.apiUrl}
                   onChange={(event) => updateActiveProfile({ apiUrl: event.target.value })}
-                  placeholder="例如：https://api.deepseek.com/v1"
+                  placeholder={tx(uiLanguage, '例如：https://api.deepseek.com/v1', 'e.g. https://api.deepseek.com/v1')}
                   className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  模型名称
+                  {tx(uiLanguage, '模型名称', 'Model Name')}
                 </label>
                 <input
                   value={activeProfile.model}
                   onChange={(event) => updateActiveProfile({ model: event.target.value })}
-                  placeholder="例如：deepseek-chat / gpt-4o-mini"
+                  placeholder={tx(uiLanguage, '例如：deepseek-chat / gpt-4o-mini', 'e.g. deepseek-chat / gpt-4o-mini')}
                   className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Temperature（0-2）
+                  {tx(uiLanguage, 'Temperature（0-2）', 'Temperature (0-2)')}
                 </label>
                 <input
                   type="number"
@@ -363,29 +381,33 @@ export function SettingsPage() {
               </div>
 
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                每个平台配置独立保存。切换平台会自动切换对应 API Key、API URL、模型和 Temperature。
+                {tx(
+                  uiLanguage,
+                  '每个平台配置独立保存。切换平台会自动切换对应 API Key、API URL、模型和 Temperature。',
+                  'Each platform is saved independently. Switching platform also switches API Key, API URL, model, and temperature.'
+                )}
               </p>
 
               <div className="flex items-center space-x-2">
                 <Button onClick={testTextModel} loading={textStatus === 'testing'}>
-                  测试当前平台连接
+                  {tx(uiLanguage, '测试当前平台连接', 'Test Current Platform')}
                 </Button>
                 {textStatus === 'success' && (
                   <div className="flex items-center text-green-600 dark:text-green-400">
                     <CheckCircle className="w-4 h-4 mr-1" />
-                    <span className="text-sm">连接成功</span>
+                    <span className="text-sm">{tx(uiLanguage, '连接成功', 'Connected')}</span>
                   </div>
                 )}
                 {textStatus === 'error' && (
                   <div className="flex items-center text-red-600 dark:text-red-400">
                     <XCircle className="w-4 h-4 mr-1" />
-                    <span className="text-sm">连接失败</span>
+                    <span className="text-sm">{tx(uiLanguage, '连接失败', 'Connection Failed')}</span>
                   </div>
                 )}
               </div>
             </div>
           ) : (
-            <div className="text-sm text-gray-500 dark:text-gray-400">暂无可用文本模型平台</div>
+            <div className="text-sm text-gray-500 dark:text-gray-400">{tx(uiLanguage, '暂无可用文本模型平台', 'No available text model platform')}</div>
           )}
         </div>
 
@@ -395,11 +417,23 @@ export function SettingsPage() {
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Pollinations API</h2>
           </div>
 
+          <div className="mb-3">
+            <a
+              href="https://pollinations.ai"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+            >
+              {tx(uiLanguage, '访问 Pollinations 官网', 'Visit Pollinations Official Site')}
+              <ExternalLink className="w-3 h-3 ml-1" />
+            </a>
+          </div>
+
           <div className="space-y-4">
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  API Key（可选）
+                  {tx(uiLanguage, 'API Key（可选）', 'API Key (Optional)')}
                 </label>
                 <a
                   href="https://enter.pollinations.ai/"
@@ -407,7 +441,7 @@ export function SettingsPage() {
                   rel="noreferrer"
                   className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
                 >
-                  获取密钥
+                  {tx(uiLanguage, '获取密钥', 'Get Key')}
                   <ExternalLink className="w-3 h-3 ml-1" />
                 </a>
               </div>
@@ -416,14 +450,14 @@ export function SettingsPage() {
                   type={showPollinationsKey ? 'text' : 'password'}
                   value={localPollinationsKey}
                   onChange={(event) => setLocalPollinationsKey(event.target.value)}
-                  placeholder="pk_... 或 sk_..."
+                  placeholder={tx(uiLanguage, 'pk_... 或 sk_...', 'pk_... or sk_...')}
                   className="w-full px-3 py-2 pr-11 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPollinationsKey((prev) => !prev)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                  title={showPollinationsKey ? '隐藏密钥' : '显示密钥'}
+                  title={showPollinationsKey ? tx(uiLanguage, '隐藏密钥', 'Hide Key') : tx(uiLanguage, '显示密钥', 'Show Key')}
                 >
                   {showPollinationsKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -431,23 +465,23 @@ export function SettingsPage() {
             </div>
 
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              不配置 API Key 也可使用，但可能会受到频率限制。
+              {tx(uiLanguage, '不配置 API Key 也可使用，但可能会受到频率限制。', 'Works without API key, but may be rate-limited.')}
             </p>
 
             <div className="flex items-center space-x-2">
               <Button onClick={testPollinations} loading={pollinationsStatus === 'testing'}>
-                测试 Pollinations 连接
+                {tx(uiLanguage, '测试 Pollinations 连接', 'Test Pollinations Connection')}
               </Button>
               {pollinationsStatus === 'success' && (
                 <div className="flex items-center text-green-600 dark:text-green-400">
                   <CheckCircle className="w-4 h-4 mr-1" />
-                  <span className="text-sm">连接成功</span>
+                  <span className="text-sm">{tx(uiLanguage, '连接成功', 'Connected')}</span>
                 </div>
               )}
               {pollinationsStatus === 'error' && (
                 <div className="flex items-center text-red-600 dark:text-red-400">
                   <XCircle className="w-4 h-4 mr-1" />
-                  <span className="text-sm">连接失败</span>
+                  <span className="text-sm">{tx(uiLanguage, '连接失败', 'Connection Failed')}</span>
                 </div>
               )}
             </div>
@@ -455,7 +489,7 @@ export function SettingsPage() {
         </div>
 
         <div className="flex justify-end">
-          <Button onClick={saveSettings}>保存设置</Button>
+          <Button onClick={saveSettings}>{tx(uiLanguage, '保存设置', 'Save Settings')}</Button>
         </div>
       </div>
     </div>

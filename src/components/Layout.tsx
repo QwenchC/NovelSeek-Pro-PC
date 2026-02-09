@@ -11,10 +11,15 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const sidebarOpen = useAppStore(state => state.sidebarOpen);
   const theme = useAppStore(state => state.theme);
+  const uiLanguage = useAppStore(state => state.uiLanguage);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.lang = uiLanguage === 'en' ? 'en' : 'zh-CN';
+  }, [uiLanguage]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">

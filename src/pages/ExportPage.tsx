@@ -6,6 +6,7 @@ import { Button } from '@components/Button';
 import { chapterApi, projectApi, systemApi } from '@services/api';
 import { useAppStore } from '@store/index';
 import type { Chapter, Project, SystemFontOption } from '@typings/index';
+import { tx } from '@utils/i18n';
 
 interface CoverImageItem {
   id: string;
@@ -325,12 +326,22 @@ function toSafeFileName(name: string): string {
   return normalized || 'novel';
 }
 
-function isPrologueChapter(chapter: Chapter): boolean {
-  return chapter.order_index === 0 || chapter.title.trim() === '序章';
+function getContentLanguage(project: Project | null | undefined): 'zh' | 'en' {
+  return project?.language === 'en' ? 'en' : 'zh';
 }
 
-function getChapterDisplayTitle(chapter: Chapter): string {
-  return isPrologueChapter(chapter) ? '序章' : `第${chapter.order_index}章 ${chapter.title}`;
+function isPrologueChapter(chapter: Chapter): boolean {
+  const normalizedTitle = chapter.title.trim().toLowerCase();
+  return chapter.order_index === 0 || chapter.title.trim() === '序章' || normalizedTitle === 'prologue';
+}
+
+function getChapterDisplayTitle(chapter: Chapter, contentLanguage: 'zh' | 'en'): string {
+  if (isPrologueChapter(chapter)) {
+    return contentLanguage === 'en' ? 'Prologue' : '序章';
+  }
+  return contentLanguage === 'en'
+    ? `Chapter ${chapter.order_index} ${chapter.title}`
+    : `第${chapter.order_index}章 ${chapter.title}`;
 }
 
 function ensureDataImage(image: string): string {
@@ -529,29 +540,33 @@ function wrapParagraphForPdf(pdf: jsPDF, text: string, maxWidth: number): string
   return lines.length > 0 ? lines : [indent];
 }
 
-function buildTextExportContent(project: Project, chapters: ChapterRenderData[]): string {
+function buildTextExportContent(
+  project: Project,
+  chapters: ChapterRenderData[],
+  contentLanguage: 'zh' | 'en'
+): string {
   const lines: string[] = [];
   lines.push(project.title);
-  if (project.author) lines.push(`作者：${project.author}`);
-  if (project.genre) lines.push(`类型：${project.genre}`);
+  if (project.author) lines.push(contentLanguage === 'en' ? `Author: ${project.author}` : `作者：${project.author}`);
+  if (project.genre) lines.push(contentLanguage === 'en' ? `Genre: ${project.genre}` : `类型：${project.genre}`);
   lines.push('');
   lines.push('====================');
   lines.push('');
 
   if (chapters.length === 0) {
-    lines.push('（暂无可导出章节）');
+    lines.push(contentLanguage === 'en' ? '(No chapters to export)' : '（暂无可导出章节）');
     return lines.join('\n');
   }
 
   for (const item of chapters) {
     lines.push(item.displayTitle);
     if (!item.isPrologue && item.summary) {
-      lines.push(`摘要：${item.summary}`);
+      lines.push(contentLanguage === 'en' ? `Summary: ${item.summary}` : `摘要：${item.summary}`);
     }
     lines.push('');
 
     if (item.paragraphs.length === 0) {
-      lines.push('（本章节暂无正文内容）');
+      lines.push(contentLanguage === 'en' ? '(No chapter content yet)' : '（本章节暂无正文内容）');
       lines.push('');
       continue;
     }
@@ -566,24 +581,37 @@ function buildTextExportContent(project: Project, chapters: ChapterRenderData[])
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
-function buildEpubBinary(project: Project, chapters: ChapterRenderData[]): Uint8Array {
+function buildEpubBinary(
+  project: Project,
+  chapters: ChapterRenderData[],
+  contentLanguage: 'zh' | 'en'
+): Uint8Array {
   const identifier = escapeXml(project.id || `novelseek-${Date.now()}`);
-  const title = escapeXml(project.title || '未命名小说');
-  const author = escapeXml(project.author?.trim() || '未知作者');
+  const title = escapeXml(project.title || (contentLanguage === 'en' ? 'Untitled Novel' : '未命名小说'));
+  const author = escapeXml(project.author?.trim() || (contentLanguage === 'en' ? 'Unknown Author' : '未知作者'));
   const genre = project.genre?.trim() ? escapeXml(project.genre.trim()) : '';
+  const langCode = contentLanguage === 'en' ? 'en-US' : 'zh-CN';
+  const authorLabel = contentLanguage === 'en' ? 'Author' : '作者';
+  const genreLabel = contentLanguage === 'en' ? 'Genre' : '类型';
+  const summaryLabel = contentLanguage === 'en' ? 'Summary' : '摘要';
+  const noContentLabel = contentLanguage === 'en' ? '(No chapter content yet)' : '（本章节暂无正文内容）';
+  const bookInfoLabel = contentLanguage === 'en' ? 'Book Info' : '书籍信息';
+  const tocLabel = contentLanguage === 'en' ? 'Contents' : '目录';
   const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
   const chapterFiles = chapters.map((item, index) => {
     const chapterTitle = escapeXml(item.displayTitle);
-    const summaryBlock = !item.isPrologue && item.summary ? `<p class="summary">摘要：${escapeXml(item.summary)}</p>` : '';
+    const summaryBlock = !item.isPrologue && item.summary
+      ? `<p class="summary">${summaryLabel}: ${escapeXml(item.summary)}</p>`
+      : '';
     const bodyParagraphs =
       item.paragraphs.length === 0
-        ? '<p>（本章节暂无正文内容）</p>'
+        ? `<p>${noContentLabel}</p>`
         : item.paragraphs.map((paragraph) => `<p>${escapeXml(paragraph)}</p>`).join('\n');
     const fileName = `chapter-${index + 1}.xhtml`;
 
     const content = `<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${langCode}" lang="${langCode}">
   <head>
     <meta charset="utf-8" />
     <title>${chapterTitle}</title>
@@ -610,7 +638,7 @@ function buildEpubBinary(project: Project, chapters: ChapterRenderData[]): Uint8
   });
 
   const titlePage = `<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${langCode}" lang="${langCode}">
   <head>
     <meta charset="utf-8" />
     <title>${title}</title>
@@ -622,25 +650,25 @@ function buildEpubBinary(project: Project, chapters: ChapterRenderData[]): Uint8
   </head>
   <body>
     <h1>${title}</h1>
-    <p>作者：${author}</p>
-    ${genre ? `<p>类型：${genre}</p>` : ''}
+    <p>${authorLabel}: ${author}</p>
+    ${genre ? `<p>${genreLabel}: ${genre}</p>` : ''}
   </body>
 </html>`;
 
   const navEntries = [
-    '<li><a href="title.xhtml">书籍信息</a></li>',
+    `<li><a href="title.xhtml">${bookInfoLabel}</a></li>`,
     ...chapterFiles.map((item) => `<li><a href="${item.href}">${escapeXml(item.title)}</a></li>`),
   ].join('\n');
 
   const navDocument = `<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${langCode}" lang="${langCode}">
   <head>
     <meta charset="utf-8" />
-    <title>目录</title>
+    <title>${tocLabel}</title>
   </head>
   <body>
     <nav epub:type="toc" id="toc">
-      <h1>目录</h1>
+      <h1>${tocLabel}</h1>
       <ol>
         ${navEntries}
       </ol>
@@ -650,7 +678,7 @@ function buildEpubBinary(project: Project, chapters: ChapterRenderData[]): Uint8
 
   const navPoints = [
     `<navPoint id="navpoint-title" playOrder="1">
-  <navLabel><text>书籍信息</text></navLabel>
+  <navLabel><text>${bookInfoLabel}</text></navLabel>
   <content src="title.xhtml"/>
 </navPoint>`,
     ...chapterFiles.map(
@@ -690,12 +718,12 @@ ${navPoints}
   ].join('\n    ');
 
   const contentOpf = `<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0" xml:lang="zh-CN">
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0" xml:lang="${langCode}">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="bookid">${identifier}</dc:identifier>
     <dc:title>${title}</dc:title>
     <dc:creator>${author}</dc:creator>
-    <dc:language>zh-CN</dc:language>
+    <dc:language>${langCode}</dc:language>
     <meta property="dcterms:modified">${generatedAt}</meta>
   </metadata>
   <manifest>
@@ -732,7 +760,10 @@ ${navPoints}
 export function ExportPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const promoByChapter = useAppStore((state) => state.promoByChapter);
+  const { uiLanguage, promoByChapter } = useAppStore((state) => ({
+    uiLanguage: state.uiLanguage,
+    promoByChapter: state.promoByChapter,
+  }));
 
   const [project, setProject] = useState<Project | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -747,6 +778,7 @@ export function ExportPage() {
   const [removedIllustrationIds, setRemovedIllustrationIds] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [isProgressHydrated, setIsProgressHydrated] = useState(false);
+  const contentLanguage = useMemo(() => getContentLanguage(project), [project]);
 
   useEffect(() => {
     if (!id) return;
@@ -777,7 +809,7 @@ export function ExportPage() {
           chapterApi.getByProject(id),
         ]);
         if (!projectData) {
-          setError('项目不存在');
+          setError(tx(uiLanguage, '项目不存在', 'Project not found'));
           setProject(null);
           setChapters([]);
           return;
@@ -797,14 +829,16 @@ export function ExportPage() {
           const fontMessage =
             typeof fontError === 'string'
               ? fontError
-              : (fontError as Error)?.message || '获取系统字体列表失败';
+              : (fontError as Error)?.message || tx(uiLanguage, '获取系统字体列表失败', 'Failed to load system font list');
           setFontOptions([]);
           setSelectedFontKey('');
           setError(fontMessage);
         }
       } catch (loadError) {
         const message =
-          typeof loadError === 'string' ? loadError : (loadError as Error)?.message || '加载导出数据失败';
+          typeof loadError === 'string'
+            ? loadError
+            : (loadError as Error)?.message || tx(uiLanguage, '加载导出数据失败', 'Failed to load export data');
         setError(message);
       } finally {
         setLoading(false);
@@ -864,7 +898,7 @@ export function ExportPage() {
 
       return {
         chapter,
-        displayTitle: getChapterDisplayTitle(chapter),
+        displayTitle: getChapterDisplayTitle(chapter, contentLanguage),
         isPrologue: isPrologueChapter(chapter),
         summary,
         paragraphs,
@@ -872,7 +906,7 @@ export function ExportPage() {
         illustrations,
       };
     });
-  }, [chapters, promoByChapter, removedIllustrationIds]);
+  }, [chapters, promoByChapter, removedIllustrationIds, contentLanguage]);
 
   const isTextOnlyFormat = exportFormat !== 'pdf';
 
@@ -910,7 +944,7 @@ export function ExportPage() {
     setExporting(true);
     setError(null);
     try {
-      const content = buildTextExportContent(project, chapterRenderData);
+      const content = buildTextExportContent(project, chapterRenderData, contentLanguage);
       const utf8Bom = new Uint8Array([0xef, 0xbb, 0xbf]);
       const bytes = concatBytes([utf8Bom, encodeUtf8(content)]);
       const fileName = `${toSafeFileName(project.title)}_export.${targetFormat}`;
@@ -919,7 +953,9 @@ export function ExportPage() {
       downloadBytes(fileName, bytes, mimeType);
     } catch (exportError) {
       const message =
-        typeof exportError === 'string' ? exportError : (exportError as Error)?.message || `${targetFormat.toUpperCase()} 导出失败`;
+        typeof exportError === 'string'
+          ? exportError
+          : (exportError as Error)?.message || tx(uiLanguage, `${targetFormat.toUpperCase()} 导出失败`, `${targetFormat.toUpperCase()} export failed`);
       setError(message);
     } finally {
       setExporting(false);
@@ -931,12 +967,14 @@ export function ExportPage() {
     setExporting(true);
     setError(null);
     try {
-      const epubBytes = buildEpubBinary(project, chapterRenderData);
+      const epubBytes = buildEpubBinary(project, chapterRenderData, contentLanguage);
       const fileName = `${toSafeFileName(project.title)}_export.epub`;
       downloadBytes(fileName, epubBytes, 'application/epub+zip');
     } catch (exportError) {
       const message =
-        typeof exportError === 'string' ? exportError : (exportError as Error)?.message || 'EPUB 导出失败';
+        typeof exportError === 'string'
+          ? exportError
+          : (exportError as Error)?.message || tx(uiLanguage, 'EPUB 导出失败', 'EPUB export failed');
       setError(message);
     } finally {
       setExporting(false);
@@ -951,8 +989,13 @@ export function ExportPage() {
     try {
       const fontOption = fontOptions.find((item) => item.key === selectedFontKey) || fontOptions[0];
       if (!fontOption) {
-        throw new Error('未找到可用系统字体，请先安装中文字体');
+        throw new Error(tx(uiLanguage, '未找到可用系统字体，请先安装中文字体', 'No usable system font found. Install a font and retry.'));
       }
+      const authorLabel = contentLanguage === 'en' ? 'Author' : '作者';
+      const genreLabel = contentLanguage === 'en' ? 'Genre' : '类型';
+      const summaryLabel = contentLanguage === 'en' ? 'Summary' : '摘要';
+      const noChapterContentLabel = contentLanguage === 'en' ? '(No chapter content yet)' : '（本章节暂无正文内容）';
+      const tocLabel = contentLanguage === 'en' ? 'Contents' : '目录';
 
       const pdf = new jsPDF({
         orientation: 'p',
@@ -998,13 +1041,13 @@ export function ExportPage() {
 
         if (project.author) {
           pdf.setFontSize(14);
-          pdf.text(`作者：${project.author}`, pageWidth / 2, coverY, { align: 'center' });
+          pdf.text(`${authorLabel}: ${project.author}`, pageWidth / 2, coverY, { align: 'center' });
           coverY += 26;
         }
 
         if (project.genre) {
           pdf.setFontSize(12);
-          pdf.text(`类型：${project.genre}`, pageWidth / 2, coverY, { align: 'center' });
+          pdf.text(`${genreLabel}: ${project.genre}`, pageWidth / 2, coverY, { align: 'center' });
           coverY += 22;
         }
 
@@ -1050,7 +1093,7 @@ export function ExportPage() {
 
         if (!item.isPrologue && item.summary) {
           pdf.setFontSize(12);
-          const summaryLines = pdf.splitTextToSize(`摘要：${item.summary}`, contentWidth) as string[];
+          const summaryLines = pdf.splitTextToSize(`${summaryLabel}: ${item.summary}`, contentWidth) as string[];
           ensureSpace(summaryLines.length * 20 + 1);
           pdf.text(summaryLines, margin.left, cursorY);
           cursorY += summaryLines.length * 20 + 1;
@@ -1078,7 +1121,7 @@ export function ExportPage() {
         if (item.paragraphs.length === 0) {
           ensureSpace(24);
           pdf.setFontSize(12);
-          pdf.text('（本章节暂无正文内容）', margin.left, cursorY);
+          pdf.text(noChapterContentLabel, margin.left, cursorY);
           cursorY += 22;
         } else {
           for (let index = 0; index < item.paragraphs.length; index += 1) {
@@ -1130,7 +1173,7 @@ export function ExportPage() {
         fillPageWhite(pdf, pageWidth, pageHeight);
 
         pdf.setFontSize(24);
-        pdf.text('目录', margin.left, tocTitleY);
+        pdf.text(tocLabel, margin.left, tocTitleY);
         pdf.setFontSize(12);
 
         const start = tocPageIndex * tocEntriesPerPage;
@@ -1172,7 +1215,9 @@ export function ExportPage() {
       pdf.save(fileName);
     } catch (exportError) {
       const message =
-        typeof exportError === 'string' ? exportError : (exportError as Error)?.message || 'PDF 导出失败';
+        typeof exportError === 'string'
+          ? exportError
+          : (exportError as Error)?.message || tx(uiLanguage, 'PDF 导出失败', 'PDF export failed');
       setError(message);
     } finally {
       setExporting(false);
@@ -1196,26 +1241,26 @@ export function ExportPage() {
   const exportButtonLabel = (() => {
     switch (exportFormat) {
       case 'txt':
-        return '导出 TXT';
+        return tx(uiLanguage, '导出 TXT', 'Export TXT');
       case 'epub':
-        return '导出 EPUB';
+        return tx(uiLanguage, '导出 EPUB', 'Export EPUB');
       case 'mobi':
-        return '导出 MOBI';
+        return tx(uiLanguage, '导出 MOBI', 'Export MOBI');
       default:
-        return '导出 PDF';
+        return tx(uiLanguage, '导出 PDF', 'Export PDF');
     }
   })();
 
   if (loading) {
-    return <div className="text-sm text-gray-600 dark:text-gray-400">正在加载导出数据...</div>;
+    return <div className="text-sm text-gray-600 dark:text-gray-400">{tx(uiLanguage, '正在加载导出数据...', 'Loading export data...')}</div>;
   }
 
   if (!project) {
     return (
       <div className="space-y-3">
-        <p className="text-sm text-red-600 dark:text-red-400">{error || '项目不存在'}</p>
+        <p className="text-sm text-red-600 dark:text-red-400">{error || tx(uiLanguage, '项目不存在', 'Project not found')}</p>
         <Button variant="outline" onClick={() => navigate('/')}>
-          返回首页
+          {tx(uiLanguage, '返回首页', 'Back to Home')}
         </Button>
       </div>
     );
@@ -1226,15 +1271,15 @@ export function ExportPage() {
       <div className="flex items-center justify-between">
         <Button variant="ghost" onClick={() => navigate(`/project/${id}`)} className="whitespace-nowrap">
           <ArrowLeft className="w-4 h-4 mr-2" />
-          返回章节列表
+          {tx(uiLanguage, '返回章节列表', 'Back to Chapter List')}
         </Button>
-        <h1 className="text-xl font-semibold text-gray-900 dark:text-white">导出电子书</h1>
+        <h1 className="text-xl font-semibold text-gray-900 dark:text-white">{tx(uiLanguage, '导出电子书', 'Export Ebook')}</h1>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 flex-1 min-h-0">
         <section className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-4 overflow-auto">
           <div>
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">导出格式</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">{tx(uiLanguage, '导出格式', 'Export Format')}</h2>
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
                 <input
@@ -1245,7 +1290,7 @@ export function ExportPage() {
                   onChange={() => setExportFormat('pdf')}
                   disabled={exporting}
                 />
-                PDF（A4，支持图片）
+                {tx(uiLanguage, 'PDF（A4，支持图片）', 'PDF (A4, supports images)')}
               </label>
               <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
                 <input
@@ -1256,7 +1301,7 @@ export function ExportPage() {
                   onChange={() => setExportFormat('txt')}
                   disabled={exporting}
                 />
-                TXT（纯文本）
+                {tx(uiLanguage, 'TXT（纯文本）', 'TXT (Plain Text)')}
               </label>
               <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
                 <input
@@ -1267,7 +1312,7 @@ export function ExportPage() {
                   onChange={() => setExportFormat('epub')}
                   disabled={exporting}
                 />
-                EPUB（纯文本）
+                {tx(uiLanguage, 'EPUB（纯文本）', 'EPUB (Plain Text)')}
               </label>
               <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200">
                 <input
@@ -1278,13 +1323,13 @@ export function ExportPage() {
                   onChange={() => setExportFormat('mobi')}
                   disabled={exporting}
                 />
-                MOBI（纯文本）
+                {tx(uiLanguage, 'MOBI（纯文本）', 'MOBI (Plain Text)')}
               </label>
             </div>
           </div>
 
           <div className="space-y-2">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white">系统中文字体</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">{tx(uiLanguage, '系统中文字体', 'System Fonts')}</h2>
             <select
               value={selectedFontKey}
               onChange={(event) => setSelectedFontKey(event.target.value)}
@@ -1292,7 +1337,7 @@ export function ExportPage() {
               className="w-full rounded-md border border-gray-300 bg-white text-gray-900 px-3 py-2 text-sm disabled:opacity-60 dark:bg-gray-900 dark:border-gray-700 dark:text-gray-100"
             >
               {fontOptions.length === 0 ? (
-                <option value="">未检测到可用字体</option>
+                <option value="">{tx(uiLanguage, '未检测到可用字体', 'No available font detected')}</option>
               ) : (
                 fontOptions.map((font) => (
                   <option key={font.key} value={font.key}>
@@ -1303,16 +1348,16 @@ export function ExportPage() {
             </select>
             {exportFormat === 'pdf' ? (
               <>
-                <p className="text-xs text-gray-500 dark:text-gray-400">从系统字体目录读取并嵌入 PDF</p>
-                <p className="text-xs text-amber-700 dark:text-amber-400">若导出后中文显示异常，请切换其他字体重试</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">{tx(uiLanguage, '从系统字体目录读取并嵌入 PDF', 'Read and embed font from system directory')}</p>
+                <p className="text-xs text-amber-700 dark:text-amber-400">{tx(uiLanguage, '若导出后中文显示异常，请切换其他字体重试', 'If exported text renders incorrectly, switch font and retry')}</p>
               </>
             ) : (
-              <p className="text-xs text-gray-500 dark:text-gray-400">当前格式为文本导出，不依赖字体嵌入</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">{tx(uiLanguage, '当前格式为文本导出，不依赖字体嵌入', 'Current format is text-only export and does not require font embedding')}</p>
             )}
           </div>
 
           <div>
-            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">导出内容</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">{tx(uiLanguage, '导出内容', 'Export Content')}</h2>
             <div className="space-y-2">
               <label className={`flex items-center gap-2 text-sm ${isTextOnlyFormat ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
                 <input
@@ -1321,7 +1366,7 @@ export function ExportPage() {
                   onChange={(event) => setIncludeNovelCover(event.target.checked)}
                   disabled={isTextOnlyFormat || exporting}
                 />
-                小说封面
+                {tx(uiLanguage, '小说封面', 'Novel Cover')}
               </label>
               <label className={`flex items-center gap-2 text-sm ${isTextOnlyFormat ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
                 <input
@@ -1330,7 +1375,7 @@ export function ExportPage() {
                   onChange={(event) => setIncludeChapterCover(event.target.checked)}
                   disabled={isTextOnlyFormat || exporting}
                 />
-                章节封面
+                {tx(uiLanguage, '章节封面', 'Chapter Cover')}
               </label>
               <label className={`flex items-center gap-2 text-sm ${isTextOnlyFormat ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
                 <input
@@ -1339,11 +1384,11 @@ export function ExportPage() {
                   onChange={(event) => setIncludeParagraphIllustrations(event.target.checked)}
                   disabled={isTextOnlyFormat || exporting}
                 />
-                段落插图
+                {tx(uiLanguage, '段落插图', 'Paragraph Illustrations')}
               </label>
             </div>
             {isTextOnlyFormat && (
-              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">当前格式不支持图片，仅导出文本内容</p>
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{tx(uiLanguage, '当前格式不支持图片，仅导出文本内容', 'Current format does not support images, only text will be exported')}</p>
             )}
           </div>
 
@@ -1364,7 +1409,7 @@ export function ExportPage() {
               className="w-full"
             >
               <ImageOff className="w-4 h-4 mr-2" />
-              恢复全部已删除插图
+              {tx(uiLanguage, '恢复全部已删除插图', 'Restore All Removed Illustrations')}
             </Button>
           </div>
 
@@ -1377,20 +1422,26 @@ export function ExportPage() {
 
         <section className="lg:col-span-3 bg-gray-100 dark:bg-gray-900/40 rounded-lg border border-gray-200 dark:border-gray-700 p-4 min-h-0 flex flex-col">
           <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-            {isTextOnlyFormat ? '导出预览（文本导出，图片不会导出）' : '导出预览（可删除个别段落插图）'}
+            {isTextOnlyFormat
+              ? tx(uiLanguage, '导出预览（文本导出，图片不会导出）', 'Export Preview (Text-only, images not exported)')
+              : tx(uiLanguage, '导出预览（可删除个别段落插图）', 'Export Preview (You can remove specific illustrations)')}
           </div>
           <div className="flex-1 overflow-auto">
             <div className="mx-auto max-w-[794px] bg-white text-black rounded-md shadow p-10 space-y-12">
               {!isTextOnlyFormat && includeNovelCover && projectCover && (
                 <div className="bg-white rounded space-y-3">
-                  <img src={projectCover} alt="小说封面" className="w-full max-h-[1020px] object-contain rounded" />
+                  <img src={projectCover} alt={tx(uiLanguage, '小说封面', 'Novel Cover')} className="w-full max-h-[1020px] object-contain rounded" />
                 </div>
               )}
 
               <div className="text-center space-y-3 border-b border-gray-200 pb-10">
                 <h2 className="text-4xl font-bold text-gray-900">{project.title}</h2>
-                {project.author && <p className="text-gray-700">作者：{project.author}</p>}
-                {project.genre && <p className="text-gray-700">类型：{project.genre}</p>}
+                {project.author && (
+                  <p className="text-gray-700">{contentLanguage === 'en' ? `Author: ${project.author}` : `作者：${project.author}`}</p>
+                )}
+                {project.genre && (
+                  <p className="text-gray-700">{contentLanguage === 'en' ? `Genre: ${project.genre}` : `类型：${project.genre}`}</p>
+                )}
               </div>
 
               {chapterRenderData.map((item) => (
@@ -1398,13 +1449,15 @@ export function ExportPage() {
                   <h3 className="text-2xl font-semibold text-gray-900">{item.displayTitle}</h3>
 
                   {!item.isPrologue && item.summary && (
-                    <p className="text-sm text-gray-700 border-l-2 border-gray-300 pl-3">摘要：{item.summary}</p>
+                    <p className="text-sm text-gray-700 border-l-2 border-gray-300 pl-3">
+                      {contentLanguage === 'en' ? `Summary: ${item.summary}` : `摘要：${item.summary}`}
+                    </p>
                   )}
 
                   {!isTextOnlyFormat && includeChapterCover && item.chapterCover && (
                     <img
                       src={item.chapterCover}
-                      alt={`${item.displayTitle} 封面`}
+                      alt={`${item.displayTitle} ${tx(uiLanguage, '封面', 'Cover')}`}
                       className="w-full rounded max-h-[420px] object-contain bg-white !mt-1 mb-6"
                     />
                   )}
@@ -1413,7 +1466,9 @@ export function ExportPage() {
 
                   {item.paragraphs.length === 0 ? (
                     <div className="space-y-3">
-                      <p className="text-gray-500 italic">本章节暂时无正文内容</p>
+                      <p className="text-gray-500 italic">
+                        {contentLanguage === 'en' ? 'No chapter content yet' : '本章节暂时无正文内容'}
+                      </p>
                       {!isTextOnlyFormat &&
                         includeParagraphIllustrations &&
                         item.illustrations.map((illustration) => (
@@ -1423,15 +1478,15 @@ export function ExportPage() {
                                 type="button"
                                 onClick={() => handleRemoveIllustration(illustration.id)}
                                 className="inline-flex items-center text-xs text-red-600 hover:text-red-700"
-                                title="从导出中移除该插图"
+                                title={tx(uiLanguage, '从导出中移除该插图', 'Remove this illustration from export')}
                               >
                                 <X className="w-3 h-3 mr-1" />
-                                删除插图
+                                {tx(uiLanguage, '删除插图', 'Remove Illustration')}
                               </button>
                             </div>
                             <img
                               src={illustration.imageBase64}
-                              alt="段落插图"
+                              alt={tx(uiLanguage, '段落插图', 'Paragraph Illustration')}
                               className="w-full rounded max-h-[320px] object-contain bg-white"
                             />
                           </div>
@@ -1454,15 +1509,15 @@ export function ExportPage() {
                                     type="button"
                                     onClick={() => handleRemoveIllustration(illustration.id)}
                                     className="inline-flex items-center text-xs text-red-600 hover:text-red-700"
-                                    title="从导出中移除该插图"
+                                    title={tx(uiLanguage, '从导出中移除该插图', 'Remove this illustration from export')}
                                   >
                                     <X className="w-3 h-3 mr-1" />
-                                    删除插图
+                                    {tx(uiLanguage, '删除插图', 'Remove Illustration')}
                                   </button>
                                 </div>
                                 <img
                                   src={illustration.imageBase64}
-                                  alt={`段落 ${anchor} 插图`}
+                                  alt={tx(uiLanguage, `段落 ${anchor} 插图`, `Paragraph ${anchor} Illustration`)}
                                   className="w-full rounded max-h-[320px] object-contain bg-white"
                                 />
                               </div>
@@ -1478,7 +1533,7 @@ export function ExportPage() {
               {chapterRenderData.length === 0 && (
                 <div className="text-center text-gray-500 py-10">
                   <FileText className="w-6 h-6 mx-auto mb-2" />
-                  暂无章节可导出
+                  {tx(uiLanguage, '暂无章节可导出', 'No chapters to export')}
                 </div>
               )}
             </div>

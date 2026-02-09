@@ -5,11 +5,12 @@ import { projectApi } from '@services/api';
 import { Button } from '@components/Button';
 import { Plus, BookOpen, Calendar, TrendingUp, Trash2 } from 'lucide-react';
 import { formatDate, formatWordCount, calculateProgress, confirmDialog } from '@utils/index';
+import { tx } from '@utils/i18n';
 import type { Project } from '@typings/index';
 
 export function HomePage() {
   const navigate = useNavigate();
-  const { projects, setProjects } = useAppStore();
+  const { projects, setProjects, uiLanguage } = useAppStore();
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
 
@@ -21,17 +22,16 @@ export function HomePage() {
     try {
       const data = await projectApi.getAll();
       setProjects(data);
-      
-      // 异步更新每个项目的字数统计
+
       const { invoke } = await import('@tauri-apps/api/tauri');
       for (const project of data) {
         try {
           await invoke('recalculate_project_word_count', { projectId: project.id });
-        } catch (e) {
-          console.error('Failed to update word count for', project.id, e);
+        } catch (error) {
+          console.error('Failed to update word count for', project.id, error);
         }
       }
-      // 重新加载以获取更新后的数据
+
       const updatedData = await projectApi.getAll();
       setProjects(updatedData);
     } catch (error) {
@@ -46,23 +46,29 @@ export function HomePage() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    const confirmed = await confirmDialog('确定要删除这个项目吗？删除后无法恢复！', '删除项目');
-    if (!confirmed) {
-      return;
-    }
+    const confirmed = await confirmDialog(
+      tx(
+        uiLanguage,
+        '确定要删除这个项目吗？删除后无法恢复！',
+        'Delete this project? This action cannot be undone.'
+      ),
+      tx(uiLanguage, '删除项目', 'Delete Project')
+    );
+    if (!confirmed) return;
+
     try {
       await projectApi.delete(projectId);
       loadProjects();
     } catch (error) {
       console.error('Failed to delete project:', error);
-      alert('删除项目失败');
+      alert(tx(uiLanguage, '删除项目失败', 'Failed to delete project'));
     }
   };
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-gray-500">加载中...</div>
+        <div className="text-gray-500">{tx(uiLanguage, '加载中...', 'Loading...')}</div>
       </div>
     );
   }
@@ -71,14 +77,16 @@ export function HomePage() {
     <div className="w-full max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 md:mb-8">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">我的项目</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">
+            {tx(uiLanguage, '我的项目', 'My Projects')}
+          </h1>
           <p className="text-gray-600 dark:text-gray-400 mt-1 text-sm md:text-base">
-            管理你的小说创作项目
+            {tx(uiLanguage, '管理你的小说创作项目', 'Manage your novel writing projects')}
           </p>
         </div>
         <Button onClick={handleCreateProject} className="whitespace-nowrap self-start sm:self-auto">
           <Plus className="w-4 h-4 mr-2" />
-          新建项目
+          {tx(uiLanguage, '新建项目', 'New Project')}
         </Button>
       </div>
 
@@ -86,14 +94,18 @@ export function HomePage() {
         <div className="text-center py-20">
           <BookOpen className="w-16 h-16 mx-auto text-gray-400 mb-4" />
           <h3 className="text-xl font-medium text-gray-700 dark:text-gray-300 mb-2">
-            还没有项目
+            {tx(uiLanguage, '还没有项目', 'No projects yet')}
           </h3>
           <p className="text-gray-500 dark:text-gray-400 mb-6">
-            创建你的第一个小说项目开始创作吧！
+            {tx(
+              uiLanguage,
+              '创建你的第一个小说项目开始创作吧！',
+              'Create your first novel project to get started.'
+            )}
           </p>
           <Button onClick={handleCreateProject}>
             <Plus className="w-4 h-4 mr-2" />
-            创建项目
+            {tx(uiLanguage, '创建项目', 'Create Project')}
           </Button>
         </div>
       ) : (
@@ -102,6 +114,7 @@ export function HomePage() {
             <ProjectCard
               key={project.id}
               project={project}
+              uiLanguage={uiLanguage}
               onClick={() => navigate(`/project/${project.id}`)}
               onDelete={() => handleDeleteProject(project.id)}
             />
@@ -122,25 +135,25 @@ export function HomePage() {
   );
 }
 
-// 去除 Markdown 标记，提取纯文本预览
 function stripMarkdown(text: string): string {
   return text
-    .replace(/#{1,6}\s+/g, '') // 移除标题标记
-    .replace(/\*\*(.+?)\*\*/g, '$1') // 移除加粗
-    .replace(/\*(.+?)\*/g, '$1') // 移除斜体
-    .replace(/[-*]\s+/g, '') // 移除列表标记
-    .replace(/\n{2,}/g, ' ') // 多个换行变空格
-    .replace(/\n/g, ' ') // 换行变空格
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/[-*]\s+/g, '')
+    .replace(/\n{2,}/g, ' ')
+    .replace(/\n/g, ' ')
     .trim();
 }
 
 interface ProjectCardProps {
   project: Project;
+  uiLanguage: 'zh' | 'en';
   onClick: () => void;
   onDelete: () => void;
 }
 
-function ProjectCard({ project, onClick, onDelete }: ProjectCardProps) {
+function ProjectCard({ project, uiLanguage, onClick, onDelete }: ProjectCardProps) {
   const progress = project.target_word_count
     ? calculateProgress(project.current_word_count, project.target_word_count)
     : 0;
@@ -183,25 +196,22 @@ function ProjectCard({ project, onClick, onDelete }: ProjectCardProps) {
   };
 
   const coverSrc = getDefaultCoverSrc(project);
+  const outlinePreview = project.description ? stripMarkdown(project.description) : '';
 
-  const handleDelete = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleDelete = (event: React.MouseEvent) => {
+    event.stopPropagation();
     onDelete();
   };
-
-  // 获取大纲预览（去除markdown标记）
-  const outlinePreview = project.description ? stripMarkdown(project.description) : '';
 
   return (
     <div
       onClick={onClick}
       className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 hover:shadow-lg transition-shadow cursor-pointer relative group"
     >
-      {/* 删除按钮 */}
       <button
         onClick={handleDelete}
         className="absolute top-3 right-3 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600"
-        title="删除项目"
+        title={tx(uiLanguage, '删除项目', 'Delete project')}
       >
         <Trash2 className="w-4 h-4" />
       </button>
@@ -213,14 +223,10 @@ function ProjectCard({ project, onClick, onDelete }: ProjectCardProps) {
             style={{ width: 108, height: 192 }}
           >
             {coverSrc ? (
-              <img
-                src={coverSrc}
-                alt="封面预览"
-                className="w-full h-full object-cover"
-              />
+              <img src={coverSrc} alt="cover-preview" className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
-                暂无封面
+                {tx(uiLanguage, '暂无封面', 'No cover')}
               </div>
             )}
           </div>
@@ -278,6 +284,7 @@ interface CreateProjectModalProps {
 }
 
 function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
+  const uiLanguage = useAppStore((state) => state.uiLanguage);
   const [title, setTitle] = useState('');
   const [author, setAuthor] = useState('');
   const [genre, setGenre] = useState('');
@@ -285,8 +292,8 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
   const [targetWordCount, setTargetWordCount] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setLoading(true);
 
     try {
@@ -295,12 +302,13 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
         author: author || undefined,
         genre: genre || undefined,
         description: description || undefined,
-        target_word_count: targetWordCount ? parseInt(targetWordCount) : undefined,
+        language: uiLanguage,
+        target_word_count: targetWordCount ? parseInt(targetWordCount, 10) : undefined,
       });
       onSuccess();
     } catch (error) {
       console.error('Failed to create project:', error);
-      alert('创建项目失败');
+      alert(tx(uiLanguage, '创建项目失败', 'Failed to create project'));
     } finally {
       setLoading(false);
     }
@@ -309,17 +317,19 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">创建新项目</h2>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+          {tx(uiLanguage, '创建新项目', 'Create New Project')}
+        </h2>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              书名 *
+              {tx(uiLanguage, '书名 *', 'Title *')}
             </label>
             <input
               type="text"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(event) => setTitle(event.target.value)}
               className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
               required
             />
@@ -327,48 +337,48 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              作者笔名
+              {tx(uiLanguage, '作者笔名', 'Author')}
             </label>
             <input
               type="text"
               value={author}
-              onChange={(e) => setAuthor(e.target.value)}
+              onChange={(event) => setAuthor(event.target.value)}
               className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
             />
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              题材
+              {tx(uiLanguage, '题材', 'Genre')}
             </label>
             <input
               type="text"
               value={genre}
-              onChange={(e) => setGenre(e.target.value)}
+              onChange={(event) => setGenre(event.target.value)}
               className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
-              placeholder="例如: 玄幻、都市、科幻"
+              placeholder={tx(uiLanguage, '例如：玄幻、都市、科幻', 'e.g. Fantasy, Urban, Sci-Fi')}
             />
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              简介
+              {tx(uiLanguage, '简介', 'Description')}
             </label>
             <textarea
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(event) => setDescription(event.target.value)}
               className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-24 resize-none"
             />
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              目标字数
+              {tx(uiLanguage, '目标字数', 'Target Word Count')}
             </label>
             <input
               type="number"
               value={targetWordCount}
-              onChange={(e) => setTargetWordCount(e.target.value)}
+              onChange={(event) => setTargetWordCount(event.target.value)}
               className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
               placeholder="100000"
             />
@@ -376,10 +386,10 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
 
           <div className="flex space-x-3 pt-4">
             <Button type="button" variant="outline" onClick={onClose} className="flex-1">
-              取消
+              {tx(uiLanguage, '取消', 'Cancel')}
             </Button>
             <Button type="submit" loading={loading} className="flex-1">
-              创建
+              {tx(uiLanguage, '创建', 'Create')}
             </Button>
           </div>
         </form>
@@ -387,3 +397,4 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
     </div>
   );
 }
+

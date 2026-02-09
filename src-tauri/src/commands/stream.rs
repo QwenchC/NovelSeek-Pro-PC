@@ -21,6 +21,14 @@ pub struct GenerateOutlineStreamInput {
     pub target_chapters: u32,
     pub text_config: TextModelConfigInput,
     pub requirements: Option<String>,
+    pub output_language: Option<String>,
+}
+
+fn normalize_output_language(value: Option<&str>) -> &'static str {
+    match value.map(|item| item.trim().to_ascii_lowercase()) {
+        Some(lang) if lang == "en" => "en",
+        _ => "zh",
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,9 +60,10 @@ pub async fn generate_outline_stream(
 
     let client = Client::new();
     let target_chapters = input.target_chapters;
+    let output_language = normalize_output_language(input.output_language.as_deref());
     
-    let initial_prompt = build_outline_prompt(&input);
-    let system_prompt = build_outline_system_prompt(target_chapters);
+    let initial_prompt = build_outline_prompt(&input, output_language);
+    let system_prompt = build_outline_system_prompt(target_chapters, output_language);
 
     // 第一次生成
     let mut full_content = stream_generate(
@@ -70,7 +79,7 @@ pub async fn generate_outline_stream(
 
     // 检测是否需要续写（最多续写5次）
     let max_continuations = 5;
-    for i in 0..max_continuations {
+    for _ in 0..max_continuations {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
             return Err("生成已被用户中断".to_string());
         }
@@ -83,12 +92,52 @@ pub async fn generate_outline_stream(
             break;
         }
 
-        // 通知前端正在续写
-        let _ = window.emit("outline-stream", format!("\n\n【系统：检测到大纲未完成（已生成到第{}章，目标{}章），正在自动续写...】\n\n", last_chapter_found, target_chapters));
+        let (continue_notice, continue_prompt, continue_system) = if output_language == "en" {
+            (
+                format!(
+                    "\n\n[System: Outline incomplete (generated through Chapter {}, target Chapter {}). Continuing automatically...]\n\n",
+                    last_chapter_found, target_chapters
+                ),
+                format!(
+                    r#"Please continue the chapter outline section.
 
-        // 构建续写提示
-        let continue_prompt = format!(
-            r#"请继续完成大纲的章节部分。
+[Tail of generated content]
+{}
+
+[Continuation requirements]
+1. Continue from Chapter {} through Chapter {}
+2. Keep the same format as above
+3. Chapter template:
+### Chapter X: Chapter Title
+- **Time**: timeline point of this chapter
+- **Goal**: main plot objective of this chapter
+- **Conflict**: core conflict/challenge
+- **Hook**: ending hook to drive the next chapter
+
+Continue directly from Chapter {}. Do not repeat existing content:"#,
+                    get_last_n_chars(&full_content, 1500),
+                    last_chapter_found + 1,
+                    target_chapters,
+                    last_chapter_found + 1
+                ),
+                format!(
+                    r#"You are continuing an existing novel outline.
+Existing chapters are Chapter 1 to Chapter {}. Continue Chapter {} to Chapter {} only.
+
+Keep the same Markdown format and continue directly without extra introduction."#,
+                    last_chapter_found,
+                    last_chapter_found + 1,
+                    target_chapters
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "\n\n【系统：检测到大纲未完成（已生成到第{}章，目标{}章），正在自动续写...】\n\n",
+                    last_chapter_found, target_chapters
+                ),
+                format!(
+                    r#"请继续完成大纲的章节部分。
 
 【已生成内容的结尾】
 {}
@@ -104,20 +153,23 @@ pub async fn generate_outline_stream(
 - **结尾钩子**：吸引读者继续阅读的悬念
 
 请直接从第{}章开始续写，不要重复已有内容："#,
-            get_last_n_chars(&full_content, 1500),
-            last_chapter_found + 1,
-            target_chapters,
-            last_chapter_found + 1
-        );
-
-        let continue_system = format!(
-            r#"你正在续写一份小说大纲。前面的内容已经生成了第1章到第{}章，现在需要继续生成剩余的章节（第{}章到第{}章）。
+                    get_last_n_chars(&full_content, 1500),
+                    last_chapter_found + 1,
+                    target_chapters,
+                    last_chapter_found + 1
+                ),
+                format!(
+                    r#"你正在续写一份小说大纲。前面的内容已经生成了第1章到第{}章，现在需要继续生成剩余的章节（第{}章到第{}章）。
 
 请保持格式一致，直接续写章节内容，不要添加任何开头说明。"#,
-            last_chapter_found,
-            last_chapter_found + 1,
-            target_chapters
-        );
+                    last_chapter_found,
+                    last_chapter_found + 1,
+                    target_chapters
+                ),
+            )
+        };
+
+        let _ = window.emit("outline-stream", continue_notice);
 
         // 续写生成
         let continuation = stream_generate(
@@ -138,7 +190,89 @@ pub async fn generate_outline_stream(
 }
 
 // 构建大纲生成的初始提示词
-fn build_outline_prompt(input: &GenerateOutlineStreamInput) -> String {
+fn build_outline_prompt(input: &GenerateOutlineStreamInput, output_language: &str) -> String {
+    if output_language == "en" {
+        let mut prompt = format!(
+            r#"Create a detailed novel outline for:
+
+Title: {}
+Genre: {}
+Description: {}
+Target chapters: {} (must be exactly this number)
+
+"#,
+            input.title, input.genre, input.description, input.target_chapters
+        );
+
+        if let Some(ref req) = input.requirements {
+            prompt.push_str(&format!("Special requirements: {}\n\n", req));
+        }
+
+        prompt.push_str(&format!(
+            r#"[Important] Use exactly this structure and generate exactly {} chapters:
+
+## Story Overview
+(~150-250 words)
+
+## Core Conflict
+(main contradiction and tension)
+
+## World Building
+(setting, rules, factions, social structure)
+
+### Base Setting
+- **Era**: time period
+- **Geography**: key places
+- **Society**: power/faction structure
+- **Rules**: special rules (magic/tech/power systems)
+
+### Major Factions
+(3-5 important factions)
+
+## Timeline Events
+(chronological key events)
+
+### Historical Events (before main story)
+1. [Time] event and impact
+
+### Story Timeline (during the story)
+1. [Chapter/Time] key event
+
+## Main Characters
+
+### 1. Character Name
+- **Role**: role identity
+- **Personality**: personality traits
+- **Background**: backstory
+- **Motivation**: goal/motivation
+
+## Three-Act Structure
+
+### Act I: Setup (~20%)
+### Act II: Rising Action & Climax (~60%)
+### Act III: Resolution (~20%)
+
+## Chapter Outline
+
+[Must generate exactly {} chapters]
+
+### Chapter 1: Chapter Title
+- **Time**: timeline point of this chapter
+- **Goal**: major objective of this chapter
+- **Conflict**: core challenge
+- **Hook**: ending hook
+
+### Chapter 2: Chapter Title
+...
+
+(Continue to Chapter {})
+
+Output in English only and keep strict Markdown format."#,
+            input.target_chapters, input.target_chapters, input.target_chapters
+        ));
+        return prompt;
+    }
+
     let mut prompt = format!(
         r#"请为以下小说创建详细大纲：
 
@@ -235,7 +369,27 @@ fn build_outline_prompt(input: &GenerateOutlineStreamInput) -> String {
 }
 
 // 构建大纲生成的系统提示词
-fn build_outline_system_prompt(target_chapters: u32) -> String {
+fn build_outline_system_prompt(target_chapters: u32, output_language: &str) -> String {
+    if output_language == "en" {
+        return format!(
+            r#"You are a professional novel planner and story architect.
+
+Core constraints:
+1. Output exactly {} chapters, no more and no less.
+2. Use strict Markdown headings and list format.
+3. Keep sections parse-friendly for programmatic extraction.
+4. Write the entire output in English.
+
+Quality requirements:
+- coherent plot progression
+- complete world building
+- clear timeline
+- consistent character design
+- each chapter must include Time / Goal / Conflict / Hook"#,
+            target_chapters
+        );
+    }
+
     format!(r#"你是一位专业的小说策划师和编剧。你的任务是根据用户提供的题材、风格和要求，创建详细的小说大纲。
 
 【核心要求】
@@ -263,11 +417,11 @@ fn build_outline_system_prompt(target_chapters: u32) -> String {
 fn find_last_chapter_number(content: &str) -> u32 {
     use regex::Regex;
     
-    // 匹配 "第X章" 或 "### 第X章"
-    let re = Regex::new(r"第(\d+)章").unwrap();
+    let zh_re = Regex::new(r"第(\d+)章").unwrap();
+    let en_re = Regex::new(r"(?i)chapter\s+(\d+)").unwrap();
     let mut max_chapter = 0u32;
     
-    for cap in re.captures_iter(content) {
+    for cap in zh_re.captures_iter(content).chain(en_re.captures_iter(content)) {
         if let Some(num_str) = cap.get(1) {
             if let Ok(num) = num_str.as_str().parse::<u32>() {
                 if num > max_chapter {
@@ -380,18 +534,44 @@ pub async fn generate_prologue_stream(
     title: String,
     genre: String,
     outline: String,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
     #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<String, String> {
     let _lock = GENERATION_LOCK.lock().await;
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
     let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
 
-    let system_prompt = r#"你是一位资深小说作家与编剧，擅长创作序章/引子。
-你的目标是写出能够快速建立世界观与氛围、埋下核心伏笔的序章，且避免与第一章内容重复。"#;
+    let (system_prompt, prompt) = if output_language == "en" {
+        (
+            r#"You are a senior fiction writer specialized in prologues/openings.
+Write a prologue that builds atmosphere and world context quickly, plants foreshadowing, and avoids duplicating Chapter 1 events."#
+                .to_string(),
+            format!(
+                r#"Write a prologue/opening based on the outline below.
+Requirements:
+1. Focus on atmosphere, world setup, suspense, and foreshadowing.
+2. Do not retell or fully unfold Chapter 1 core events/conflict.
+3. You may hint at key characters/factions without fully exposing the mainline.
+4. Output plain English prose only, no Markdown.
+5. Length about 800-1500 words.
 
-    let prompt = format!(
-        r#"请根据以下小说大纲创作【序章/引子】，要求：
+Title: {}
+Genre: {}
+
+Outline:
+{}"#,
+                title, genre, outline
+            ),
+        )
+    } else {
+        (
+            r#"你是一位资深小说作家与编剧，擅长创作序章/引子。
+你的目标是写出能够快速建立世界观与氛围、埋下核心伏笔的序章，且避免与第一章内容重复。"#
+                .to_string(),
+            format!(
+                r#"请根据以下小说大纲创作【序章/引子】，要求：
 1. 重点营造世界观、氛围、悬念或伏笔。
 2. 不要复述或展开第一章的具体事件，不要推进到第一章的核心冲突。
 3. 可点出关键人物或势力，但不要完整揭示主线。
@@ -403,14 +583,16 @@ pub async fn generate_prologue_stream(
 
 小说大纲：
 {}"#,
-        title, genre, outline
-    );
+                title, genre, outline
+            ),
+        )
+    };
 
     let content = stream_generate(
         &client,
         &window,
         &textConfig,
-        system_prompt,
+        &system_prompt,
         &prompt,
         "chapter-stream",
         2200,
@@ -434,6 +616,7 @@ pub async fn generate_chapter_stream(
     #[allow(non_snake_case)] timeline: Option<String>,
     #[allow(non_snake_case)] targetWords: Option<u32>,
     #[allow(non_snake_case)] isContinuation: Option<bool>,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
     #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<String, String> {
     let _lock = GENERATION_LOCK.lock().await;
@@ -443,48 +626,112 @@ pub async fn generate_chapter_stream(
     let client = Client::new();
     let is_continue = isContinuation.unwrap_or(false);
     let word_target = targetWords.unwrap_or(2500);
+    let output_language = normalize_output_language(outputLanguage.as_deref());
     let api_url = textConfig.chat_completions_url();
     let temperature = textConfig.normalized_temperature(0.7);
     
     let mut prompt = String::new();
     
-    // 添加世界观设定（确保各章节世界观一致）
     if let Some(ref world) = worldSetting {
-        prompt.push_str(&format!(
-            r#"【重要：世界观设定 - 必须严格遵守】
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                r#"[Important: World Building - follow strictly]
+Keep all generated content consistent with this world setting:
+
+{}
+
+"#,
+                world
+            ));
+        } else {
+            prompt.push_str(&format!(
+                r#"【重要：世界观设定 - 必须严格遵守】
 以下是本小说的世界观设定，生成内容时必须保持一致，不得与设定冲突：
 
 {}
 
-"#, world));
+"#,
+                world
+            ));
+        }
     }
-    
-    // 添加时间线事件（确保各章节时间线一致）
+
     if let Some(ref tl) = timeline {
-        prompt.push_str(&format!(
-            r#"【重要：时间线事件 - 必须严格遵守】
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                r#"[Important: Timeline - follow strictly]
+Keep chronology consistent with these events:
+
+{}
+
+"#,
+                tl
+            ));
+        } else {
+            prompt.push_str(&format!(
+                r#"【重要：时间线事件 - 必须严格遵守】
 以下是本小说的时间线，生成内容时必须保持时间顺序一致，不得与已发生的事件冲突：
 
 {}
 
-"#, tl));
+"#,
+                tl
+            ));
+        }
     }
-    
-    // 如果有角色信息，添加角色设定
+
     if let Some(ref chars) = charactersInfo {
-        prompt.push_str(&format!(
-            r#"【重要：角色设定 - 必须严格遵守】
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                r#"[Important: Character Bible - follow strictly]
+Keep identity/personality/background/motivation consistent:
+
+{}
+
+"#,
+                chars
+            ));
+        } else {
+            prompt.push_str(&format!(
+                r#"【重要：角色设定 - 必须严格遵守】
 以下是本小说的角色设定，生成内容时必须保持角色身份、性格、背景完全一致，不得擅自更改：
 
 {}
 
-"#, chars));
+"#,
+                chars
+            ));
+        }
     }
-    
+
     if is_continue {
-        // 续写模式
-        prompt.push_str(&format!(
-            r#"请续写以下小说章节内容。
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                r#"Continue writing this chapter.
+
+Chapter title: {}
+Chapter goal: {}
+
+[Current tail]
+{}
+
+Requirements:
+1. Continue naturally without repeating existing text.
+2. Keep advancing the plot.
+3. Write around {} words for this continuation.
+4. Keep style and pacing consistent.
+5. Strictly follow world setting, timeline, and character bible.
+6. Output plain English prose only (no Markdown).
+
+Continue directly:"#,
+                chapterTitle,
+                outlineGoal,
+                currentContent.as_deref().unwrap_or("(none)"),
+                word_target
+            ));
+        } else {
+            prompt.push_str(&format!(
+                r#"请续写以下小说章节内容。
 
 章节标题：{}
 本章目标：{}
@@ -501,33 +748,66 @@ pub async fn generate_chapter_stream(
 6. 不要使用markdown格式，直接输出小说正文
 
 请直接续写内容，不要添加任何说明或标记："#,
-            chapterTitle, 
-            outlineGoal,
-            currentContent.as_deref().unwrap_or("（无）"),
-            word_target
-        ));
+                chapterTitle,
+                outlineGoal,
+                currentContent.as_deref().unwrap_or("（无）"),
+                word_target
+            ));
+        }
     } else {
-        // 新章节生成模式
-        prompt.push_str(&format!(
-            r#"请撰写以下章节：
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                r#"Write this chapter:
+
+Chapter title: {}
+Chapter goal: {}
+Core conflict: {}
+"#,
+                chapterTitle, outlineGoal, conflict
+            ));
+            if let Some(ref summary) = previousSummary {
+                prompt.push_str(&format!(
+                    r#"
+[Previous chapter tail for continuity]
+{}
+
+"#,
+                    summary
+                ));
+            }
+            prompt.push_str(&format!(
+                r#"
+Requirements:
+1. Write around {} words.
+2. Strictly follow world setting, timeline, and character bible.
+3. Strong scene immersion and visual details.
+4. Natural dialogues consistent with character voices.
+5. If previous chapter context exists, connect naturally.
+6. Output plain English prose only (no Markdown).
+
+Start writing the chapter content now:"#,
+                word_target
+            ));
+        } else {
+            prompt.push_str(&format!(
+                r#"请撰写以下章节：
 
 章节标题：{}
 本章目标：{}
 核心冲突：{}
 "#,
-            chapterTitle, outlineGoal, conflict
-        ));
+                chapterTitle, outlineGoal, conflict
+            ));
 
-        // 添加前一章的上下文，确保连贯性
-        if let Some(ref summary) = previousSummary {
-            prompt.push_str(&format!(r#"
+            if let Some(ref summary) = previousSummary {
+                prompt.push_str(&format!(r#"
 【前一章结尾内容】（请自然衔接，不要重复）
 {}
 
 "#, summary));
-        }
+            }
 
-        prompt.push_str(&format!(r#"
+            prompt.push_str(&format!(r#"
 写作要求：
 1. 本次生成约{}字
 2. 【重要】必须严格遵守世界观设定、时间线和角色设定，不得与之冲突
@@ -537,9 +817,26 @@ pub async fn generate_chapter_stream(
 6. 不要使用markdown格式，直接输出小说正文
 
 请直接开始撰写章节内容："#, word_target));
+        }
     }
 
-    let system_prompt = r#"你是一位优秀的小说作者。你的任务是根据大纲和章节目标，撰写引人入胜的章节内容。
+    let system_prompt = if output_language == "en" {
+        r#"You are a skilled fiction writer.
+
+Hard constraints:
+1. Follow world building exactly.
+2. Follow timeline consistency exactly.
+3. Follow character bible exactly.
+4. Keep continuity with previous content when provided.
+5. Output plain English prose only (no Markdown).
+
+Style:
+- concrete details over vague abstraction
+- show, don't tell
+- natural dialogue
+- controlled pacing and rhythm"#
+    } else {
+        r#"你是一位优秀的小说作者。你的任务是根据大纲和章节目标，撰写引人入胜的章节内容。
 
 【最重要的规则 - 必须严格遵守】
 1. 世界观一致性：如果用户提供了世界观设定（时代背景、地理环境、社会结构、特殊规则、势力分布），你必须严格遵守，不得创造与设定矛盾的内容。
@@ -558,7 +855,8 @@ pub async fn generate_chapter_stream(
 - 使用具体细节而非笼统描述
 - 展示而非告知（Show, don't tell）
 - 保持语言简洁有力
-- 不要使用任何markdown格式，输出纯小说正文"#;
+- 不要使用任何markdown格式，输出纯小说正文"#
+    };
 
     let request_body = serde_json::json!({
         "model": textConfig.model,
@@ -738,25 +1036,80 @@ pub async fn generate_chapter_promo(
     #[allow(non_snake_case)] chapterTitle: String,
     #[allow(non_snake_case)] chapterContent: String,
     #[allow(non_snake_case)] style: Option<String>,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
     #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<ChapterPromoResult, String> {
     textConfig.validate()?;
     let client = Client::new();
     let api_url = textConfig.chat_completions_url();
     let temperature = textConfig.normalized_temperature(0.7);
+    let output_language = normalize_output_language(outputLanguage.as_deref());
     let style_text = style.unwrap_or_default();
     let style_section = if style_text.trim().is_empty() {
-        "用户未指定画风，请根据章节氛围选择最合适的英文画风。".to_string()
+        if output_language == "en" {
+            "No style provided. Select the most suitable style based on chapter tone.".to_string()
+        } else {
+            "用户未指定画风，请根据章节氛围选择最合适的英文画风。".to_string()
+        }
     } else {
-        format!(
-            "用户指定画风（可能包含中文，请先翻译为英文再融合到 image_prompt）：{}",
-            style_text
-        )
+        if output_language == "en" {
+            format!(
+                "User style input (might be non-English). Translate to English and merge into image_prompt: {}",
+                style_text
+            )
+        } else {
+            format!(
+                "用户指定画风（可能包含中文，请先翻译为英文再融合到 image_prompt）：{}",
+                style_text
+            )
+        }
     };
     
     // 构建提示词：让AI生成摘要和英文图片提示词
-    let prompt = format!(
-        r#"你是一位专业的小说营销专家。请根据以下章节内容，完成两项任务：
+    let prompt = if output_language == "en" {
+        format!(
+            r#"You are a professional fiction marketing editor. Complete two tasks from this chapter:
+
+## Chapter Title
+{}
+
+## Chapter Content
+{}
+
+---
+
+## Style Requirement
+{}
+
+Tasks:
+
+### Task 1: Summary
+Write a concise English summary for social promotion:
+- up to 70 words
+- highlight strongest hook
+- vivid and suspenseful
+
+### Task 2: Image Prompt
+Generate an English image prompt for AI art:
+- must be English
+- incorporate style requirement (translate non-English style words first)
+- describe the most representative scene/mood of this chapter
+- include style cues (e.g. cinematic, dramatic lighting, anime style)
+- suitable for a chapter cover image
+
+Return strict JSON only:
+{{"summary": "English summary", "image_prompt": "English image prompt here"}}"#,
+            chapterTitle,
+            if chapterContent.chars().count() > 3000 {
+                chapterContent.chars().take(3000).collect::<String>() + "..."
+            } else {
+                chapterContent.clone()
+            },
+            style_section
+        )
+    } else {
+        format!(
+            r#"你是一位专业的小说营销专家。请根据以下章节内容，完成两项任务：
 
 ## 章节标题
 {}
@@ -787,22 +1140,26 @@ pub async fn generate_chapter_promo(
 
 请严格按照以下JSON格式返回，不要添加任何其他内容：
 {{"summary": "中文摘要内容", "image_prompt": "English image prompt here"}}"#,
-        chapterTitle, 
-        // 只取前3000字避免超出token限制
-        if chapterContent.chars().count() > 3000 {
-            chapterContent.chars().take(3000).collect::<String>() + "..."
-        } else {
-            chapterContent.clone()
-        },
-        style_section
-    );
+            chapterTitle,
+            if chapterContent.chars().count() > 3000 {
+                chapterContent.chars().take(3000).collect::<String>() + "..."
+            } else {
+                chapterContent.clone()
+            },
+            style_section
+        )
+    };
 
     let request_body = serde_json::json!({
         "model": textConfig.model,
         "messages": [
             {
                 "role": "system",
-                "content": "你是一位专业的小说营销专家与图像提示词工程师。请严格按JSON格式返回结果，且image_prompt必须是英文。"
+                "content": if output_language == "en" {
+                    "You are a professional fiction marketing editor and image prompt engineer. Return strict JSON. image_prompt must be English."
+                } else {
+                    "你是一位专业的小说营销专家与图像提示词工程师。请严格按JSON格式返回结果，且image_prompt必须是英文。"
+                }
             },
             {
                 "role": "user",

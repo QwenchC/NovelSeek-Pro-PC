@@ -1,9 +1,12 @@
+export type UiLanguage = 'zh' | 'en';
+
 export interface Project {
   id: string;
   title: string;
   author?: string;
   genre?: string;
   description?: string;
+  language?: UiLanguage;
   target_word_count?: number;
   current_word_count: number;
   status: 'draft' | 'in_progress' | 'completed';
@@ -18,6 +21,7 @@ export interface CreateProjectInput {
   author?: string;
   genre?: string;
   description?: string;
+  language?: UiLanguage;
   target_word_count?: number;
   cover_images?: string | null;
   default_cover_id?: string | null;

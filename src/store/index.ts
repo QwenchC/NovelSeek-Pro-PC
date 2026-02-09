@@ -6,6 +6,7 @@ import type {
   TextModelConfig,
   TextModelProfile,
   TextModelProvider,
+  UiLanguage,
 } from '@typings/index';
 
 export interface Character {
@@ -114,6 +115,13 @@ function getInitialTheme(): 'light' | 'dark' {
     return 'dark';
   }
   return 'light';
+}
+
+function getInitialUiLanguage(): UiLanguage {
+  if (typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
+    return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  }
+  return 'zh';
 }
 
 function clampTemperature(value: number): number {
@@ -275,6 +283,9 @@ interface AppState {
   theme: 'light' | 'dark';
   setTheme: (theme: 'light' | 'dark') => void;
   toggleTheme: () => void;
+  uiLanguage: UiLanguage;
+  setUiLanguage: (language: UiLanguage) => void;
+  toggleUiLanguage: () => void;
 
   isGenerating: boolean;
   generationProgress: string;
@@ -495,6 +506,12 @@ export const useAppStore = create<AppState>()(
       theme: getInitialTheme(),
       setTheme: (theme) => set({ theme }),
       toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
+      uiLanguage: getInitialUiLanguage(),
+      setUiLanguage: (uiLanguage) => set({ uiLanguage }),
+      toggleUiLanguage: () =>
+        set((state) => ({
+          uiLanguage: state.uiLanguage === 'zh' ? 'en' : 'zh',
+        })),
 
       isGenerating: false,
       generationProgress: '',
@@ -503,7 +520,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'novelseek-storage',
-      version: 3,
+      version: 4,
       partialize: (state) => ({
         textModelConfig: state.textModelConfig,
         textModelProfiles: state.textModelProfiles,
@@ -514,6 +531,7 @@ export const useAppStore = create<AppState>()(
         timelineByProject: state.timelineByProject,
         promoByChapter: state.promoByChapter,
         theme: state.theme,
+        uiLanguage: state.uiLanguage,
       }),
       migrate: (persistedState: any, version) => {
         if (!persistedState || typeof persistedState !== 'object') {
@@ -584,6 +602,13 @@ export const useAppStore = create<AppState>()(
           );
           persistedState.activeTextModelProfileId = configuredActive.id;
           persistedState.textModelConfig = toTextModelConfig(configuredActive);
+        }
+
+        if (version < 4) {
+          persistedState.uiLanguage =
+            persistedState.uiLanguage === 'en' || persistedState.uiLanguage === 'zh'
+              ? persistedState.uiLanguage
+              : getInitialUiLanguage();
         }
 
         return persistedState;

@@ -8,6 +8,7 @@ pub struct Project {
     pub author: Option<String>,
     pub genre: Option<String>,
     pub description: Option<String>,
+    pub language: String,
     pub target_word_count: Option<i64>,
     pub current_word_count: i64,
     pub status: String, // draft, in_progress, completed
@@ -23,6 +24,7 @@ pub struct CreateProjectInput {
     pub author: Option<String>,
     pub genre: Option<String>,
     pub description: Option<String>,
+    pub language: Option<String>,
     pub target_word_count: Option<i64>,
     pub cover_images: Option<String>,
     pub default_cover_id: Option<String>,

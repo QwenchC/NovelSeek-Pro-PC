@@ -8,6 +8,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import type { Chapter } from '@typings/index';
 import { confirmDialog } from '@utils/index';
+import { tx } from '@utils/i18n';
 
 // 单次生成的目标字数（控制在2500字左右避免中断）
 const TARGET_WORDS_PER_GENERATION = 2500;
@@ -53,7 +54,16 @@ export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { textModelConfig, pollinationsKey, getCharacters, getWorldSetting, getTimeline, getPromo, setPromo } = useAppStore();
+  const {
+    textModelConfig,
+    pollinationsKey,
+    getCharacters,
+    getWorldSetting,
+    getTimeline,
+    getPromo,
+    setPromo,
+    uiLanguage,
+  } = useAppStore();
   const hasValidTextConfig = useMemo(
     () =>
       textModelConfig.apiKey.trim().length > 0 &&
@@ -65,6 +75,7 @@ export function EditorPage() {
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [allChapters, setAllChapters] = useState<Chapter[]>([]);
+  const [projectLanguage, setProjectLanguage] = useState<'zh' | 'en'>('zh');
   const [content, setContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -236,6 +247,8 @@ export function EditorPage() {
   const loadChapterData = async () => {
     try {
       const chapters = await chapterApi.getByProject(projectId!);
+      const project = await projectApi.getById(projectId!);
+      setProjectLanguage(project?.language === 'en' ? 'en' : 'zh');
       setAllChapters(chapters);
       const found = chapters.find(c => c.id === chapterId);
       if (found) {
@@ -248,7 +261,7 @@ export function EditorPage() {
       }
     } catch (error) {
       console.error('Failed to load chapter:', error);
-      setError('加载章节失败');
+      setError(tx(uiLanguage, '加载章节失败', 'Failed to load chapter'));
     }
   };
 
@@ -284,7 +297,7 @@ export function EditorPage() {
       setIsSaved(true);
     } catch (error) {
       console.error('Failed to save:', error);
-      setError('保存失败');
+      setError(tx(uiLanguage, '保存失败', 'Save failed'));
     } finally {
       setIsSaving(false);
     }
@@ -399,7 +412,7 @@ export function EditorPage() {
   const handlePolishSelection = async () => {
     if (!revisionSelection) return;
     if (!hasValidTextConfig) {
-      setError('请先在设置页面配置 DeepSeek API 密钥');
+      setError(tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
     setIsRevising(true);
@@ -435,12 +448,12 @@ export function EditorPage() {
   // 生成新内容（从头或续写）
   const handleGenerate = async (mode: 'new' | 'continue' = 'new') => {
     if (!hasValidTextConfig) {
-      setError('请先在设置页面配置 DeepSeek API 密钥');
+      setError(tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
 
     if (!chapter) {
-      setError('章节信息未加载');
+      setError(tx(uiLanguage, '章节信息未加载', 'Chapter data is not loaded'));
       return;
     }
 
@@ -485,6 +498,7 @@ export function EditorPage() {
         timeline: timeline || null,
         targetWords: TARGET_WORDS_PER_GENERATION,
         isContinuation: mode === 'continue',
+        outputLanguage: projectLanguage,
         textConfig: textModelConfig,
       });
 
@@ -512,12 +526,12 @@ export function EditorPage() {
   // 生成章节推文（封面+摘要）
   const handleGeneratePrologue = async () => {
     if (!hasValidTextConfig) {
-      setError('请先在设置页面配置 DeepSeek API 密钥');
+      setError(tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
 
     if (!projectId) {
-      setError('项目信息未加载');
+      setError(tx(uiLanguage, '项目信息未加载', 'Project data is not loaded'));
       return;
     }
 
@@ -542,10 +556,14 @@ export function EditorPage() {
         title: project.title,
         genre: project.genre || '未分类',
         outline: project.description,
+        outputLanguage: project.language || 'zh',
         textConfig: textModelConfig,
       });
     } catch (err) {
-      const message = typeof err === 'string' ? err : (err as Error)?.message || '序章生成失败';
+      const message =
+        typeof err === 'string'
+          ? err
+          : (err as Error)?.message || tx(uiLanguage, '序章生成失败', 'Failed to generate prologue');
       if (!message.includes('cancelled') && !message.includes('中断')) {
         setError(message);
       }
@@ -559,12 +577,18 @@ export function EditorPage() {
 
   const openPromoStyleConfig = () => {
     if (!content || content.trim().length < 100) {
-      setPromoError('章节内容太少，请先生成或编写更多内容（至少100字）');
+      setPromoError(
+        tx(
+          uiLanguage,
+          '章节内容太少，请先生成或编写更多内容（至少100字）',
+          'Chapter content is too short. Generate or write more content (at least 100 characters).'
+        )
+      );
       return;
     }
 
     if (!hasValidTextConfig) {
-      setPromoError('请先在设置中配置DeepSeek API Key');
+      setPromoError(tx(uiLanguage, '请先在设置中配置DeepSeek API Key', 'Configure text model API key in Settings first'));
       return;
     }
 
@@ -574,12 +598,18 @@ export function EditorPage() {
 
   const handleGeneratePromo = async (styleInput?: string) => {
     if (!content || content.trim().length < 100) {
-      setPromoError('章节内容太少，请先生成或编写更多内容（至少100字）');
+      setPromoError(
+        tx(
+          uiLanguage,
+          '章节内容太少，请先生成或编写更多内容（至少100字）',
+          'Chapter content is too short. Generate or write more content (at least 100 characters).'
+        )
+      );
       return;
     }
 
     if (!hasValidTextConfig) {
-      setPromoError('请先在设置中配置DeepSeek API Key');
+      setPromoError(tx(uiLanguage, '请先在设置中配置DeepSeek API Key', 'Configure text model API key in Settings first'));
       return;
     }
 
@@ -590,9 +620,10 @@ export function EditorPage() {
     try {
       // 第一步：生成摘要和图片提示词
       const promoData = await invoke<{ image_prompt: string; summary: string }>('generate_chapter_promo', {
-        chapterTitle: chapter?.title || '未命名章节',
+        chapterTitle: chapter?.title || (projectLanguage === 'en' ? 'Untitled Chapter' : '未命名章节'),
         chapterContent: content,
         style,
+        outputLanguage: projectLanguage,
         textConfig: textModelConfig,
       });
 
@@ -618,7 +649,10 @@ export function EditorPage() {
         setPromo(chapterId, newPromoResult);
       }
     } catch (err) {
-      const errorMessage = typeof err === 'string' ? err : (err as Error)?.message || '推文生成失败';
+      const errorMessage =
+        typeof err === 'string'
+          ? err
+          : (err as Error)?.message || tx(uiLanguage, '推文生成失败', 'Failed to generate promo');
       setPromoError(errorMessage);
     } finally {
       setIsGeneratingPromo(false);
@@ -668,7 +702,10 @@ export function EditorPage() {
   };
 
   const handleDeleteIllustration = async (id: string) => {
-    const confirmed = await confirmDialog('确定删除这张插图吗？', '删除插图');
+    const confirmed = await confirmDialog(
+      tx(uiLanguage, '确定删除这张插图吗？', 'Delete this illustration?'),
+      tx(uiLanguage, '删除插图', 'Delete Illustration')
+    );
     if (!confirmed) return;
     setIllustrations(prev => prev.filter(item => item.id !== id));
     setAnchorEdits(prev => {
@@ -684,11 +721,11 @@ export function EditorPage() {
 
   const openIllustrationConfig = () => {
     if (!hasValidTextConfig) {
-      setIllustrationError('请先在设置页面配置 DeepSeek API 密钥');
+      setIllustrationError(tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
     if (selectedIndices.length === 0) {
-      setIllustrationError('请先勾选需要生成插图的段落');
+      setIllustrationError(tx(uiLanguage, '请先勾选需要生成插图的段落', 'Select paragraphs before generating illustrations'));
       return;
     }
 
@@ -699,11 +736,11 @@ export function EditorPage() {
 
   const generateIllustrationWithConfig = async (config: IllustrationConfig) => {
     if (!hasValidTextConfig) {
-      setIllustrationError('请先在设置页面配置 DeepSeek API 密钥');
+      setIllustrationError(tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
     if (selectedIndices.length === 0) {
-      setIllustrationError('请先勾选需要生成插图的段落');
+      setIllustrationError(tx(uiLanguage, '请先勾选需要生成插图的段落', 'Select paragraphs before generating illustrations'));
       return;
     }
 
@@ -745,7 +782,10 @@ export function EditorPage() {
       clearParagraphSelection();
       setIsSaved(false);
     } catch (err) {
-      const errorMessage = typeof err === 'string' ? err : (err as Error)?.message || '插图生成失败';
+      const errorMessage =
+        typeof err === 'string'
+          ? err
+          : (err as Error)?.message || tx(uiLanguage, '插图生成失败', 'Failed to generate illustration');
       setIllustrationError(errorMessage);
     } finally {
       setIsGeneratingIllustration(false);
@@ -766,7 +806,12 @@ export function EditorPage() {
 
   const getChapterDisplayTitle = (targetChapter: Chapter): string => {
     const targetIsPrologue = targetChapter.title.trim() === '序章' || targetChapter.order_index === 0;
-    return targetIsPrologue ? '序章' : `第${targetChapter.order_index}章 - ${targetChapter.title}`;
+    if (targetIsPrologue) {
+      return tx(uiLanguage, '序章', 'Prologue');
+    }
+    return uiLanguage === 'en'
+      ? `Chapter ${targetChapter.order_index} - ${targetChapter.title}`
+      : `第${targetChapter.order_index}章 - ${targetChapter.title}`;
   };
 
   const handleSwitchChapter = async (targetChapter: Chapter) => {
@@ -778,7 +823,14 @@ export function EditorPage() {
     }
 
     if (!isSaved) {
-      const confirmed = await confirmDialog('当前有未保存内容，切换章节会丢失修改，确定继续吗？', '未保存内容');
+      const confirmed = await confirmDialog(
+        tx(
+          uiLanguage,
+          '当前有未保存内容，切换章节会丢失修改，确定继续吗？',
+          'You have unsaved changes. Switching chapters will discard them. Continue?'
+        ),
+        tx(uiLanguage, '未保存内容', 'Unsaved Changes')
+      );
       if (!confirmed) {
         return;
       }
@@ -830,7 +882,13 @@ export function EditorPage() {
   }, [content, chapterId]);
 
   const isPrologue = chapter?.title.trim() === '序章' || chapter?.order_index === 0;
-  const headerTitle = chapter ? (isPrologue ? '序章' : `第${chapter.order_index}章 - ${chapter.title}`) : '章节编辑器';
+  const headerTitle = chapter
+    ? isPrologue
+      ? tx(uiLanguage, '序章', 'Prologue')
+      : uiLanguage === 'en'
+        ? `Chapter ${chapter.order_index} - ${chapter.title}`
+        : `第${chapter.order_index}章 - ${chapter.title}`
+    : tx(uiLanguage, '章节编辑器', 'Chapter Editor');
 
   return (
     <div className="h-full flex flex-col">
@@ -839,7 +897,7 @@ export function EditorPage() {
         <div className="flex items-center space-x-4 min-w-0 flex-shrink">
           <Button variant="ghost" onClick={() => navigate(`/project/${projectId}`)} className="whitespace-nowrap flex-shrink-0">
             <ArrowLeft className="w-4 h-4 mr-2" />
-            返回
+            {tx(uiLanguage, '返回', 'Back')}
           </Button>
           <div ref={chapterSwitcherRef} className="min-w-0 relative">
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white truncate">
@@ -847,7 +905,7 @@ export function EditorPage() {
                 type="button"
                 onClick={() => setShowChapterSwitcher(prev => !prev)}
                 className="inline-flex max-w-full items-center gap-1.5 text-left text-gray-900 dark:text-white hover:text-primary-600 dark:hover:text-primary-300 transition-colors"
-                title="点击切换章节"
+                title={tx(uiLanguage, '点击切换章节', 'Click to switch chapter')}
               >
                 <span className="truncate">{headerTitle}</span>
                 {showChapterSwitcher ? (
@@ -876,7 +934,10 @@ export function EditorPage() {
                       <p className="text-sm font-medium truncate">{getChapterDisplayTitle(item)}</p>
                       {!itemIsPrologue && item.outline_goal && (
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">
-                          {stripMarkdown(item.outline_goal).replace(/^目标[：:]\s*/i, '目标：')}
+                          {stripMarkdown(item.outline_goal).replace(
+                            /^(目标|Goal)\s*[：:]\s*/i,
+                            projectLanguage === 'en' ? 'Goal: ' : '目标：'
+                          )}
                         </p>
                       )}
                     </button>
@@ -890,8 +951,12 @@ export function EditorPage() {
                 title={isPrologue ? (chapter?.final_text || chapter?.draft_text || '') : chapter?.outline_goal}
               >
                 {isPrologue
-                  ? stripMarkdown(chapter?.final_text || chapter?.draft_text || '') || '待生成'
-                  : stripMarkdown(chapter?.outline_goal || '').replace(/^目标[：:]\s*/i, '目标：')}
+                  ? stripMarkdown(chapter?.final_text || chapter?.draft_text || '') ||
+                    tx(uiLanguage, '待生成', 'Pending')
+                  : stripMarkdown(chapter?.outline_goal || '').replace(
+                      /^(目标|Goal)\s*[：:]\s*/i,
+                      projectLanguage === 'en' ? 'Goal: ' : '目标：'
+                    )}
               </p>
             )}
           </div>
@@ -900,38 +965,43 @@ export function EditorPage() {
           {/* 字数统计 */}
           <div className="flex items-center text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap">
             <FileText className="w-4 h-4 mr-1" />
-            <span>{wordCount}字</span>
+            <span>
+              {wordCount}
+              {tx(uiLanguage, '字', ' chars')}
+            </span>
           </div>
           
           {/* 保存状态 */}
           {isSaved ? (
             <span className="flex items-center text-green-600 dark:text-green-400 text-sm whitespace-nowrap">
               <Check className="w-4 h-4 mr-1" />
-              已保存
+              {tx(uiLanguage, '已保存', 'Saved')}
             </span>
           ) : (
-            <span className="text-orange-500 text-sm whitespace-nowrap">未保存</span>
+            <span className="text-orange-500 text-sm whitespace-nowrap">
+              {tx(uiLanguage, '未保存', 'Unsaved')}
+            </span>
           )}
           
           {/* 操作按钮 */}
           <div className="flex space-x-2 flex-shrink-0">
             {isGenerating ? (
-              <Button onClick={handleStop} variant="outline" className="bg-red-50 border-red-300 text-red-600 hover:bg-red-100 whitespace-nowrap">
-                <StopCircle className="w-4 h-4 mr-1" />
-                停止
-              </Button>
-            ) : (
+                <Button onClick={handleStop} variant="outline" className="bg-red-50 border-red-300 text-red-600 hover:bg-red-100 whitespace-nowrap">
+                  <StopCircle className="w-4 h-4 mr-1" />
+                  {tx(uiLanguage, '停止', 'Stop')}
+                </Button>
+              ) : (
               <>
                 {/* 如果没有内容，显示"AI生成"；如果有内容，显示"AI续写" */}
                 {content ? (
                   <Button variant="outline" onClick={() => handleGenerate('continue')} className="whitespace-nowrap">
                     <ChevronRight className="w-4 h-4 mr-1" />
-                    续写
+                    {tx(uiLanguage, '续写', 'Continue')}
                   </Button>
                 ) : (
                   <Button variant="outline" onClick={() => handleGenerate('new')} className="whitespace-nowrap">
                     <Sparkles className="w-4 h-4 mr-1" />
-                    生成
+                    {tx(uiLanguage, '生成', 'Generate')}
                   </Button>
                 )}
                 {/* 生成推文按钮 */}
@@ -940,30 +1010,38 @@ export function EditorPage() {
                   onClick={openPromoStyleConfig} 
                   disabled={isGeneratingPromo || !content || content.trim().length < 100}
                   className="whitespace-nowrap"
-                  title={!content || content.trim().length < 100 ? '需要至少100字内容' : '生成章节封面和摘要'}
+                  title={
+                    !content || content.trim().length < 100
+                      ? tx(uiLanguage, '需要至少100字内容', 'At least 100 characters required')
+                      : tx(uiLanguage, '生成章节封面和摘要', 'Generate chapter cover and summary')
+                  }
                 >
                   {isGeneratingPromo ? (
                     <Loader2 className="w-4 h-4 mr-1 animate-spin" />
                   ) : (
                     <Image className="w-4 h-4 mr-1" />
                   )}
-                  推文
+                  {tx(uiLanguage, '推文', 'Promo')}
                 </Button>
                 {/* 插图模式按钮 */}
                 <Button
                   variant={isIllustrationMode ? 'secondary' : 'outline'}
                   onClick={() => setIsIllustrationMode(prev => !prev)}
                   className="whitespace-nowrap"
-                  title={isIllustrationMode ? '退出插图模式' : '进入插图模式'}
+                  title={
+                    isIllustrationMode
+                      ? tx(uiLanguage, '退出插图模式', 'Exit illustration mode')
+                      : tx(uiLanguage, '进入插图模式', 'Enter illustration mode')
+                  }
                 >
                   <Image className="w-4 h-4 mr-1" />
-                  插图
+                  {tx(uiLanguage, '插图', 'Illustration')}
                 </Button>
               </>
             )}
             <Button onClick={handleSave} loading={isSaving} disabled={isSaved} className="whitespace-nowrap">
               <Save className="w-4 h-4 mr-1" />
-              保存
+              {tx(uiLanguage, '保存', 'Save')}
             </Button>
           </div>
         </div>
@@ -981,10 +1059,12 @@ export function EditorPage() {
               >
                 <div className="flex items-center space-x-2">
                   <Image className="w-4 h-4 text-primary-600 dark:text-primary-400" />
-                  <span className="font-medium text-gray-700 dark:text-gray-300">章节推文</span>
+                  <span className="font-medium text-gray-700 dark:text-gray-300">
+                    {tx(uiLanguage, '章节推文', 'Chapter Promo')}
+                  </span>
                   {promoResult && (
                     <span className="text-xs text-gray-500 dark:text-gray-400">
-                      （封面 + 摘要）
+                      {tx(uiLanguage, '（封面 + 摘要）', '(Cover + Summary)')}
                     </span>
                   )}
                 </div>
@@ -1005,7 +1085,7 @@ export function EditorPage() {
                         onClick={() => setPromoError(null)} 
                         className="ml-2 underline"
                       >
-                        关闭
+                        {tx(uiLanguage, '关闭', 'Close')}
                       </button>
                     </div>
                   )}
@@ -1017,7 +1097,7 @@ export function EditorPage() {
                         <div className="relative">
                           <img 
                             src={promoResult.imageBase64} 
-                            alt="章节封面" 
+                            alt={tx(uiLanguage, '章节封面', 'Chapter Cover')}
                             className="w-full rounded-lg shadow-md"
                             style={{ aspectRatio: '3/1', objectFit: 'cover' }}
                           />
@@ -1027,7 +1107,7 @@ export function EditorPage() {
                       {/* 摘要 */}
                       <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
                         <div className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">
-                          摘要：
+                          {tx(uiLanguage, '摘要：', 'Summary:')}
                         </div>
                         <p className="text-gray-800 dark:text-gray-200 leading-relaxed">
                           {promoResult.summary}
@@ -1047,7 +1127,7 @@ export function EditorPage() {
                           ) : (
                             <RefreshCw className="w-3 h-3 mr-1" />
                           )}
-                          重新生成
+                          {tx(uiLanguage, '重新生成', 'Regenerate')}
                         </Button>
                       </div>
                     </div>
@@ -1065,7 +1145,7 @@ export function EditorPage() {
                 onClick={() => setError(null)} 
                 className="text-sm text-red-500 underline mt-1"
               >
-                关闭
+                {tx(uiLanguage, '关闭', 'Close')}
               </button>
             </div>
           )}
@@ -1074,7 +1154,7 @@ export function EditorPage() {
           {isGenerating && (
             <div className="flex items-center mb-4 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-900/20 p-3 rounded-lg">
               <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-              <span>AI正在生成内容...</span>
+              <span>{tx(uiLanguage, 'AI正在生成内容...', 'AI is generating content...')}</span>
             </div>
           )}
 
@@ -1091,7 +1171,7 @@ export function EditorPage() {
                 disabled={isRevising}
                 className="absolute z-10 w-8 h-8 rounded-full bg-primary-600 hover:bg-primary-700 text-white flex items-center justify-center shadow-md"
                 style={{ left: revisionButtonPos.x, top: revisionButtonPos.y }}
-                title="润色选中内容"
+                title={tx(uiLanguage, '润色选中内容', 'Polish selected text')}
               >
                 {isRevising ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               </button>
@@ -1113,14 +1193,23 @@ export function EditorPage() {
                 setRevisionButtonPos(null);
               }}
               className="w-full h-full resize-none border-none focus:outline-none dark:bg-gray-800 dark:text-white p-6 font-serif text-lg leading-relaxed"
-              placeholder="在这里开始写作...
+               placeholder={
+                 uiLanguage === 'en'
+                   ? `Start writing here...
+
+Tips:
+- Press Ctrl+S to save quickly
+- Click "Continue" to let AI keep writing
+- You can edit AI-generated content anytime`
+                   : `在这里开始写作...
 
 提示：
 - 使用 Ctrl+S 快速保存
 - 点击「AI续写」让AI继续创作
-- 可以随时编辑AI生成的内容"
-              disabled={isGenerating}
-            />
+- 可以随时编辑AI生成的内容`
+               }
+               disabled={isGenerating}
+             />
           </div>
         </div>
         <div className="w-full lg:w-1/5 lg:min-w-[260px] flex flex-col min-h-0 lg:order-2">
@@ -1129,11 +1218,14 @@ export function EditorPage() {
             <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-gray-50 dark:bg-gray-800">
               <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                 <Image className="w-4 h-4 text-primary-600 dark:text-primary-400" />
-                <span className="font-medium">插图段落</span>
-                <span className="text-xs text-gray-500">({paragraphs.length} 段)</span>
+                <span className="font-medium">{tx(uiLanguage, '插图段落', 'Illustration Paragraphs')}</span>
+                <span className="text-xs text-gray-500">
+                  ({paragraphs.length}
+                  {tx(uiLanguage, ' 段', ' paragraphs')})
+                </span>
                 {isIllustrationMode && (
                   <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
-                    插图模式
+                    {tx(uiLanguage, '插图模式', 'Illustration Mode')}
                   </span>
                 )}
               </div>
@@ -1145,7 +1237,12 @@ export function EditorPage() {
                   disabled={!isIllustrationMode || selectedIndices.length === 0}
                   className="whitespace-nowrap"
                 >
-                  生成插图{selectedIndices.length > 0 ? `（${selectedIndices.length}段）` : ''}
+                  {tx(uiLanguage, '生成插图', 'Generate Illustration')}
+                  {selectedIndices.length > 0
+                    ? uiLanguage === 'en'
+                      ? ` (${selectedIndices.length})`
+                      : `（${selectedIndices.length}段）`
+                    : ''}
                 </Button>
                 <Button
                   size="sm"
@@ -1154,7 +1251,7 @@ export function EditorPage() {
                   disabled={selectedIndices.length === 0}
                   className="whitespace-nowrap"
                 >
-                  清空勾选
+                  {tx(uiLanguage, '清空勾选', 'Clear Selection')}
                 </Button>
               </div>
             </div>
@@ -1167,7 +1264,9 @@ export function EditorPage() {
 
             <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-900">
               {paragraphs.length === 0 ? (
-                <div className="p-4 text-sm text-gray-500 dark:text-gray-400">暂无内容，无法生成插图</div>
+                <div className="p-4 text-sm text-gray-500 dark:text-gray-400">
+                  {tx(uiLanguage, '暂无内容，无法生成插图', 'No content available for illustration')}
+                </div>
               ) : (
                 paragraphs.map((para, idx) => {
                   const index = idx + 1;
@@ -1199,7 +1298,7 @@ export function EditorPage() {
                                   ? 'bg-primary-100 border-primary-400 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
                                   : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-100 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-300'
                               }`}
-                              title="查看插图"
+                              title={tx(uiLanguage, '查看插图', 'View illustration')}
                             >
                               <Image className="w-3 h-3" />
                             </button>
@@ -1220,11 +1319,13 @@ export function EditorPage() {
                             >
                               <img
                                 src={item.imageBase64}
-                                alt="插图"
+                                alt={tx(uiLanguage, '插图', 'Illustration')}
                                 className="w-full rounded-md shadow-sm"
                               />
                               <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-                                <span className="text-gray-500 dark:text-gray-400">位置</span>
+                                <span className="text-gray-500 dark:text-gray-400">
+                                  {tx(uiLanguage, '位置', 'Anchor')}
+                                </span>
                                 <input
                                   type="number"
                                   min={1}
@@ -1243,7 +1344,7 @@ export function EditorPage() {
                                   variant="outline"
                                   onClick={() => applyAnchorChange(item.id)}
                                 >
-                                  移动
+                                  {tx(uiLanguage, '移动', 'Move')}
                                 </Button>
                                 <Button
                                   size="sm"
@@ -1251,7 +1352,7 @@ export function EditorPage() {
                                   onClick={() => handleDeleteIllustration(item.id)}
                                   className="text-red-600 hover:text-red-700"
                                 >
-                                  删除
+                                  {tx(uiLanguage, '删除', 'Delete')}
                                 </Button>
                               </div>
                             </div>
@@ -1270,11 +1371,13 @@ export function EditorPage() {
       {showPromoStyleConfig && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">章节封面风格</h2>
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+              {tx(uiLanguage, '章节封面风格', 'Chapter Cover Style')}
+            </h2>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  图片风格
+                  {tx(uiLanguage, '图片风格', 'Image Style')}
                 </label>
                 <input
                   type="text"
@@ -1282,7 +1385,11 @@ export function EditorPage() {
                   value={promoStyle}
                   onChange={e => setPromoStyle(e.target.value)}
                   className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
-                  placeholder="选择或输入风格（支持中文，会自动转换）"
+                  placeholder={tx(
+                    uiLanguage,
+                    '选择或输入风格（支持中文，会自动转换）',
+                    'Select or type a style (non-English is auto-converted)'
+                  )}
                 />
                 <datalist id="promo-style-options">
                   <option value="cinematic" />
@@ -1291,15 +1398,19 @@ export function EditorPage() {
                 </datalist>
               </div>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                支持自定义输入（含中文），系统会将风格整合为英文提示词用于生图
+                {tx(
+                  uiLanguage,
+                  '支持自定义输入（含中文），系统会将风格整合为英文提示词用于生图',
+                  'Custom input supported. Non-English style words are translated into English prompts.'
+                )}
               </p>
             </div>
             <div className="flex space-x-3 pt-6">
               <Button type="button" variant="outline" onClick={() => setShowPromoStyleConfig(false)} className="flex-1">
-                取消
+                {tx(uiLanguage, '取消', 'Cancel')}
               </Button>
               <Button onClick={confirmPromoGeneration} loading={isGeneratingPromo} className="flex-1">
-                生成
+                {tx(uiLanguage, '生成', 'Generate')}
               </Button>
             </div>
           </div>
@@ -1309,12 +1420,14 @@ export function EditorPage() {
       {showIllustrationConfig && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">插图生成设置</h2>
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+              {tx(uiLanguage, '插图生成设置', 'Illustration Settings')}
+            </h2>
 
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  模型
+                  {tx(uiLanguage, '模型', 'Model')}
                 </label>
                 <input
                   type="text"
@@ -1328,7 +1441,7 @@ export function EditorPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    宽度
+                    {tx(uiLanguage, '宽度', 'Width')}
                   </label>
                   <input
                     type="number"
@@ -1343,7 +1456,7 @@ export function EditorPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    高度
+                    {tx(uiLanguage, '高度', 'Height')}
                   </label>
                   <input
                     type="number"
@@ -1360,7 +1473,7 @@ export function EditorPage() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  图片风格
+                  {tx(uiLanguage, '图片风格', 'Image Style')}
                 </label>
                 <input
                   type="text"
@@ -1368,7 +1481,11 @@ export function EditorPage() {
                   value={illustrationConfigDraft.style}
                   onChange={e => setIllustrationConfigDraft(prev => ({ ...prev, style: e.target.value }))}
                   className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
-                  placeholder="选择或输入风格（支持中文，会自动翻译）"
+                  placeholder={tx(
+                    uiLanguage,
+                    '选择或输入风格（支持中文，会自动翻译）',
+                    'Select or type a style (non-English is auto-translated)'
+                  )}
                 />
                 <datalist id="illustration-style-options">
                   <option value="cinematic" />
@@ -1378,16 +1495,20 @@ export function EditorPage() {
               </div>
 
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                默认模型为 zimage，建议 16:9 或 3:2 比例更适合插图展示
+                {tx(
+                  uiLanguage,
+                  '默认模型为 zimage，建议 16:9 或 3:2 比例更适合插图展示',
+                  'Default model is zimage. 16:9 or 3:2 works best for illustration layout.'
+                )}
               </p>
             </div>
 
             <div className="flex space-x-3 pt-6">
               <Button type="button" variant="outline" onClick={() => setShowIllustrationConfig(false)} className="flex-1">
-                取消
+                {tx(uiLanguage, '取消', 'Cancel')}
               </Button>
               <Button onClick={confirmIllustrationGeneration} loading={isGeneratingIllustration} className="flex-1">
-                生成
+                {tx(uiLanguage, '生成', 'Generate')}
               </Button>
             </div>
           </div>

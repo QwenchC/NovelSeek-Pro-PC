@@ -16,6 +16,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             author TEXT,
             genre TEXT,
             description TEXT,
+            language TEXT NOT NULL DEFAULT 'zh',
             target_word_count INTEGER,
             current_word_count INTEGER DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'draft',
@@ -46,6 +47,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .any(|row| row.get::<String, _>("name") == "default_cover_id");
     if !has_default_cover_id {
         sqlx::query("ALTER TABLE projects ADD COLUMN default_cover_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    let has_language = project_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "language");
+    if !has_language {
+        sqlx::query("ALTER TABLE projects ADD COLUMN language TEXT NOT NULL DEFAULT 'zh'")
             .execute(pool)
             .await?;
     }

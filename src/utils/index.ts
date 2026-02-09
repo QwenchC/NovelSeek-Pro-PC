@@ -60,3 +60,16 @@ export async function confirmDialog(message: string, title = '确认'): Promise<
     return window.confirm(message);
   }
 }
+
+export async function alertDialog(
+  message: string,
+  title = '提示',
+  okLabel = '确定'
+): Promise<void> {
+  try {
+    const { message: showMessage } = await import('@tauri-apps/api/dialog');
+    await showMessage(message, { title, type: 'info', okLabel });
+  } catch {
+    window.alert(message);
+  }
+}
