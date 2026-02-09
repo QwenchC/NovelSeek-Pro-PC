@@ -13,27 +13,11 @@ It is built with `Tauri + React + TypeScript + Rust + SQLite`, supports local-fi
 - Official Logo (White): <https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo.svg>
 - Official Logo Text (White): <https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo-text.svg>
 
-> Note: official logos are white, so they are previewed on dark background blocks below.
+> Note: for reliable visibility on light backgrounds, the previews below use in-repo dark-background wrappers.
 
-<table>
-  <tr>
-    <td bgcolor="#0f172a" style="padding: 14px;">
-      <a href="https://pollinations.ai">
-        <img src="https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo.svg" alt="pollinations.ai Logo White" width="120" />
-      </a>
-    </td>
-  </tr>
-</table>
+[![pollinations.ai Logo White](docs/assets/pollinations-logo-on-dark.svg)](https://pollinations.ai)
 
-<table>
-  <tr>
-    <td bgcolor="#0f172a" style="padding: 14px;">
-      <a href="https://pollinations.ai">
-        <img src="https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo-text.svg" alt="pollinations.ai Logo Text White" width="280" />
-      </a>
-    </td>
-  </tr>
-</table>
+[![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
 
 ## Version
 

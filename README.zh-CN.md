@@ -15,25 +15,9 @@ NovelSeek Pro PC 是一款面向长篇小说创作的桌面工具，覆盖从大
 
 > 说明：官方 Logo 为白色，为保证可见性，以下在深色背景块中展示。
 
-<table>
-  <tr>
-    <td bgcolor="#0f172a" style="padding: 14px;">
-      <a href="https://pollinations.ai">
-        <img src="https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo.svg" alt="pollinations.ai Logo White" width="120" />
-      </a>
-    </td>
-  </tr>
-</table>
+[![pollinations.ai Logo White](docs/assets/pollinations-logo-on-dark.svg)](https://pollinations.ai)
 
-<table>
-  <tr>
-    <td bgcolor="#0f172a" style="padding: 14px;">
-      <a href="https://pollinations.ai">
-        <img src="https://raw.githubusercontent.com/pollinations/pollinations/main/assets/logo-text.svg" alt="pollinations.ai Logo Text White" width="280" />
-      </a>
-    </td>
-  </tr>
-</table>
+[![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
 
 ## 版本信息
 
