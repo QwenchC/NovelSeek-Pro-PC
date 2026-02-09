@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi } from '@services/api';
@@ -80,7 +80,15 @@ const normalizeCoverImages = (raw: string | null | undefined): CoverImageItem[] 
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentProject, setCurrentProject, chapters, setChapters, deepseekKey, pollinationsKey } = useAppStore();
+  const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey } = useAppStore();
+  const hasValidTextConfig = useMemo(
+    () =>
+      textModelConfig.apiKey.trim().length > 0 &&
+      textModelConfig.apiUrl.trim().length > 0 &&
+      textModelConfig.model.trim().length > 0 &&
+      Number.isFinite(textModelConfig.temperature),
+    [textModelConfig]
+  );
   const [showEditModal, setShowEditModal] = useState(false);
   const [showOutlineModal, setShowOutlineModal] = useState(false);
   const [showCreateChapterModal, setShowCreateChapterModal] = useState(false);
@@ -246,7 +254,7 @@ export function ProjectPage() {
       alert('请先生成小说大纲');
       return;
     }
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       alert('请先在设置中配置 DeepSeek API 密钥');
       return;
     }
@@ -297,7 +305,7 @@ export function ProjectPage() {
     : Math.max(...chapters.map(ch => ch.order_index)) + 1;
 
   const handleGenerateCover = async () => {
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setCoverError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -313,7 +321,7 @@ export function ProjectPage() {
       const prompt = await invoke<string>('generate_illustration_prompt', {
         text: coverPromptText,
         style: coverConfig.style?.trim() || null,
-        deepseekKey: deepseekKey,
+        textConfig: textModelConfig,
       });
 
       const imageBase64 = await invoke<string>('generate_promo_image', {
@@ -922,14 +930,19 @@ interface GenerateOutlineModalProps {
 }
 
 function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps) {
-  const { currentProject, deepseekKey } = useAppStore();
+  const { currentProject, textModelConfig } = useAppStore();
   const [chapterCount, setChapterCount] = useState('20');
   const [requirements, setRequirements] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleGenerate = async () => {
     // 检查API密钥
-    if (!deepseekKey) {
+    if (
+      !textModelConfig.apiKey.trim() ||
+      !textModelConfig.apiUrl.trim() ||
+      !textModelConfig.model.trim() ||
+      !Number.isFinite(textModelConfig.temperature)
+    ) {
       alert('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -950,7 +963,7 @@ function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps)
           genre: currentProject.genre || '未分类',
           description: currentProject.description || '暂无简介',
           target_chapters: parseInt(chapterCount),
-          deepseek_key: deepseekKey,
+          text_config: textModelConfig,
         }
       });
       console.log('大纲生成成功:', result);

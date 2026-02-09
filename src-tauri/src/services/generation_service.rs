@@ -6,6 +6,7 @@ use crate::api::pollinations::ImageGenerationParams;
 pub struct GenerationService {
     deepseek: Option<DeepSeekClient>,
     pollinations: Option<PollinationsClient>,
+    text_temperature: Option<f32>,
 }
 
 impl GenerationService {
@@ -13,16 +14,30 @@ impl GenerationService {
         deepseek_key: Option<String>,
         pollinations_key: Option<String>,
     ) -> Self {
-        let deepseek = deepseek_key.map(|key| {
-            DeepSeekClient::new(key, None, None)
-        });
+        Self::new_with_text_config(deepseek_key, None, None, None, pollinations_key)
+    }
 
+    pub fn new_with_text_config(
+        deepseek_key: Option<String>,
+        deepseek_base_url: Option<String>,
+        deepseek_model: Option<String>,
+        text_temperature: Option<f32>,
+        pollinations_key: Option<String>,
+    ) -> Self {
+        let deepseek = deepseek_key.map(|key| {
+            DeepSeekClient::new(key, deepseek_base_url.clone(), deepseek_model.clone())
+        });
         let pollinations = Some(PollinationsClient::new(pollinations_key, None));
 
         Self {
             deepseek,
             pollinations,
+            text_temperature: text_temperature.map(|v| v.clamp(0.0, 2.0)),
         }
+    }
+
+    fn effective_temperature(&self, default: f32) -> f32 {
+        self.text_temperature.unwrap_or(default).clamp(0.0, 2.0)
     }
 
     pub async fn test_deepseek(&self) -> Result<bool> {
@@ -71,7 +86,7 @@ impl GenerationService {
         );
 
         let params = GenerationParams {
-            temperature: Some(0.8),
+            temperature: Some(self.effective_temperature(0.8)),
             max_tokens: Some(4000),
             system_prompt: Some(deepseek_prompts::outline_system_prompt()),
         };
@@ -126,7 +141,7 @@ impl GenerationService {
         prompt.push_str("4. 章节结尾留悬念\n");
 
         let params = GenerationParams {
-            temperature: Some(0.7),
+            temperature: Some(self.effective_temperature(0.7)),
             max_tokens: Some(6000),
             system_prompt: Some(deepseek_prompts::chapter_system_prompt()),
         };
@@ -165,7 +180,7 @@ impl GenerationService {
         );
 
         let params = GenerationParams {
-            temperature: Some(0.7),
+            temperature: Some(self.effective_temperature(0.7)),
             max_tokens: Some(2000),
             system_prompt: Some(deepseek_prompts::chapter_system_prompt()),
         };
@@ -192,7 +207,7 @@ impl GenerationService {
         );
 
         let params = GenerationParams {
-            temperature: Some(0.5),
+            temperature: Some(self.effective_temperature(0.5)),
             max_tokens: Some(6000),
             system_prompt: Some(deepseek_prompts::revision_system_prompt()),
         };
@@ -220,7 +235,7 @@ impl GenerationService {
         );
 
         let params = GenerationParams {
-            temperature: Some(0.8),
+            temperature: Some(self.effective_temperature(0.8)),
             max_tokens: Some(1000),
             system_prompt: Some(deepseek_prompts::tweet_system_prompt()),
         };

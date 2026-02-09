@@ -1,10 +1,11 @@
-use tauri::{AppHandle, Manager, Window};
+﻿use tauri::{AppHandle, Manager, Window};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use reqwest::Client;
 use futures_util::StreamExt;
+use crate::models::TextModelConfigInput;
 
 // 全局取消标志
 lazy_static::lazy_static! {
@@ -18,7 +19,7 @@ pub struct GenerateOutlineStreamInput {
     pub genre: String,
     pub description: String,
     pub target_chapters: u32,
-    pub deepseek_key: String,
+    pub text_config: TextModelConfigInput,
     pub requirements: Option<String>,
 }
 
@@ -59,11 +60,12 @@ pub async fn generate_outline_stream(
     let mut full_content = stream_generate(
         &client, 
         &window, 
-        &input.deepseek_key, 
+        &input.text_config,
         &system_prompt, 
         &initial_prompt,
         "outline-stream",
-        8000  // 增加 token 限制
+        8000,
+        0.8,
     ).await?;
 
     // 检测是否需要续写（最多续写5次）
@@ -121,11 +123,12 @@ pub async fn generate_outline_stream(
         let continuation = stream_generate(
             &client,
             &window,
-            &input.deepseek_key,
+            &input.text_config,
             &continue_system,
             &continue_prompt,
             "outline-stream",
-            6000
+            6000,
+            0.8,
         ).await?;
 
         full_content.push_str(&continuation);
@@ -296,26 +299,31 @@ fn get_last_n_chars(s: &str, n: usize) -> &str {
 async fn stream_generate(
     client: &Client,
     window: &Window,
-    api_key: &str,
+    text_config: &TextModelConfigInput,
     system_prompt: &str,
     user_prompt: &str,
     event_name: &str,
     max_tokens: u32,
+    default_temperature: f32,
 ) -> Result<String, String> {
+    text_config.validate()?;
+    let api_url = text_config.chat_completions_url();
+    let temperature = text_config.normalized_temperature(default_temperature);
+
     let request_body = serde_json::json!({
-        "model": "deepseek-chat",
+        "model": text_config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.8,
+        "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": true
     });
 
     let response = client
-        .post("https://api.deepseek.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
+        .post(&api_url)
+        .header("Authorization", format!("Bearer {}", text_config.api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -372,7 +380,7 @@ pub async fn generate_prologue_stream(
     title: String,
     genre: String,
     outline: String,
-    #[allow(non_snake_case)] deepseekKey: String,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<String, String> {
     let _lock = GENERATION_LOCK.lock().await;
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -401,11 +409,12 @@ pub async fn generate_prologue_stream(
     let content = stream_generate(
         &client,
         &window,
-        &deepseekKey,
+        &textConfig,
         system_prompt,
         &prompt,
         "chapter-stream",
         2200,
+        0.7,
     )
     .await?;
 
@@ -425,14 +434,17 @@ pub async fn generate_chapter_stream(
     #[allow(non_snake_case)] timeline: Option<String>,
     #[allow(non_snake_case)] targetWords: Option<u32>,
     #[allow(non_snake_case)] isContinuation: Option<bool>,
-    #[allow(non_snake_case)] deepseekKey: String,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<String, String> {
     let _lock = GENERATION_LOCK.lock().await;
     CANCEL_FLAG.store(false, Ordering::SeqCst);
+    textConfig.validate()?;
 
     let client = Client::new();
     let is_continue = isContinuation.unwrap_or(false);
     let word_target = targetWords.unwrap_or(2500);
+    let api_url = textConfig.chat_completions_url();
+    let temperature = textConfig.normalized_temperature(0.7);
     
     let mut prompt = String::new();
     
@@ -549,19 +561,19 @@ pub async fn generate_chapter_stream(
 - 不要使用任何markdown格式，输出纯小说正文"#;
 
     let request_body = serde_json::json!({
-        "model": "deepseek-chat",
+        "model": textConfig.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.7,
+        "temperature": temperature,
         "max_tokens": 4000,  // 控制在4000 tokens以内，避免中断
         "stream": true
     });
 
     let response = client
-        .post("https://api.deepseek.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", deepseekKey))
+        .post(&api_url)
+        .header("Authorization", format!("Bearer {}", textConfig.api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -619,9 +631,12 @@ pub struct ChapterPromoResult {
 pub async fn generate_illustration_prompt(
     #[allow(non_snake_case)] text: String,
     #[allow(non_snake_case)] style: Option<String>,
-    #[allow(non_snake_case)] deepseekKey: String,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<String, String> {
+    textConfig.validate()?;
     let client = Client::new();
+    let api_url = textConfig.chat_completions_url();
+    let temperature = textConfig.normalized_temperature(0.6);
     let clipped_text = if text.chars().count() > 3000 {
         text.chars().take(3000).collect::<String>() + "..."
     } else {
@@ -660,7 +675,7 @@ pub async fn generate_illustration_prompt(
     );
 
     let request_body = serde_json::json!({
-        "model": "deepseek-chat",
+        "model": textConfig.model,
         "messages": [
             {
                 "role": "system",
@@ -672,12 +687,12 @@ pub async fn generate_illustration_prompt(
             }
         ],
         "max_tokens": 400,
-        "temperature": 0.6
+        "temperature": temperature
     });
 
     let response = client
-        .post("https://api.deepseek.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", deepseekKey))
+        .post(&api_url)
+        .header("Authorization", format!("Bearer {}", textConfig.api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -723,9 +738,12 @@ pub async fn generate_chapter_promo(
     #[allow(non_snake_case)] chapterTitle: String,
     #[allow(non_snake_case)] chapterContent: String,
     #[allow(non_snake_case)] style: Option<String>,
-    #[allow(non_snake_case)] deepseekKey: String,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
 ) -> Result<ChapterPromoResult, String> {
+    textConfig.validate()?;
     let client = Client::new();
+    let api_url = textConfig.chat_completions_url();
+    let temperature = textConfig.normalized_temperature(0.7);
     let style_text = style.unwrap_or_default();
     let style_section = if style_text.trim().is_empty() {
         "用户未指定画风，请根据章节氛围选择最合适的英文画风。".to_string()
@@ -780,7 +798,7 @@ pub async fn generate_chapter_promo(
     );
 
     let request_body = serde_json::json!({
-        "model": "deepseek-chat",
+        "model": textConfig.model,
         "messages": [
             {
                 "role": "system",
@@ -792,12 +810,12 @@ pub async fn generate_chapter_promo(
             }
         ],
         "max_tokens": 500,
-        "temperature": 0.7
+        "temperature": temperature
     });
 
     let response = client
-        .post("https://api.deepseek.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", deepseekKey))
+        .post(&api_url)
+        .header("Authorization", format!("Bearer {}", textConfig.api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()

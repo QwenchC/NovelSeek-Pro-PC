@@ -42,6 +42,7 @@ async fn main() {
             commands::ai::generate_prologue,
             commands::ai::generate_revision,
             commands::ai::test_deepseek_connection,
+            commands::ai::test_text_connection,
             commands::ai::test_pollinations_connection,
             commands::stream::generate_outline_stream,
             commands::stream::generate_prologue_stream,

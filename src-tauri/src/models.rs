@@ -127,3 +127,64 @@ impl Default for ApiConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextModelConfigInput {
+    pub provider: String,
+    pub api_key: String,
+    pub api_url: String,
+    pub model: String,
+    pub temperature: f32,
+}
+
+impl Default for TextModelConfigInput {
+    fn default() -> Self {
+        Self {
+            provider: "deepseek".to_string(),
+            api_key: String::new(),
+            api_url: "https://api.deepseek.com/v1".to_string(),
+            model: "deepseek-chat".to_string(),
+            temperature: 0.7,
+        }
+    }
+}
+
+impl TextModelConfigInput {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.api_key.trim().is_empty() {
+            return Err("API Key 不能为空".to_string());
+        }
+        if self.api_url.trim().is_empty() {
+            return Err("API URL 不能为空".to_string());
+        }
+        if self.model.trim().is_empty() {
+            return Err("模型名称不能为空".to_string());
+        }
+        if !self.temperature.is_finite() {
+            return Err("Temperature 无效".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn normalized_temperature(&self, fallback: f32) -> f32 {
+        if self.temperature.is_finite() {
+            self.temperature.clamp(0.0, 2.0)
+        } else {
+            fallback
+        }
+    }
+
+    pub fn normalized_api_base_url(&self) -> String {
+        self.api_url.trim().trim_end_matches('/').to_string()
+    }
+
+    pub fn chat_completions_url(&self) -> String {
+        let base = self.normalized_api_base_url();
+        if base.ends_with("/chat/completions") {
+            base
+        } else {
+            format!("{}/chat/completions", base)
+        }
+    }
+}

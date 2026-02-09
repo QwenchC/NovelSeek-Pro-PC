@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { chapterApi, projectApi } from '@services/api';
@@ -53,7 +53,15 @@ export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { deepseekKey, pollinationsKey, getCharacters, getWorldSetting, getTimeline, getPromo, setPromo } = useAppStore();
+  const { textModelConfig, pollinationsKey, getCharacters, getWorldSetting, getTimeline, getPromo, setPromo } = useAppStore();
+  const hasValidTextConfig = useMemo(
+    () =>
+      textModelConfig.apiKey.trim().length > 0 &&
+      textModelConfig.apiUrl.trim().length > 0 &&
+      textModelConfig.model.trim().length > 0 &&
+      Number.isFinite(textModelConfig.temperature),
+    [textModelConfig]
+  );
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [allChapters, setAllChapters] = useState<Chapter[]>([]);
@@ -390,7 +398,7 @@ export function EditorPage() {
 
   const handlePolishSelection = async () => {
     if (!revisionSelection) return;
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -401,7 +409,7 @@ export function EditorPage() {
         input: {
           text,
           goals: '润色并保持原意，使表达更自然流畅',
-          deepseek_key: deepseekKey,
+          text_config: textModelConfig,
         },
       });
 
@@ -426,7 +434,7 @@ export function EditorPage() {
 
   // 生成新内容（从头或续写）
   const handleGenerate = async (mode: 'new' | 'continue' = 'new') => {
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -477,7 +485,7 @@ export function EditorPage() {
         timeline: timeline || null,
         targetWords: TARGET_WORDS_PER_GENERATION,
         isContinuation: mode === 'continue',
-        deepseekKey: deepseekKey,
+        textConfig: textModelConfig,
       });
 
       unlisten();
@@ -503,7 +511,7 @@ export function EditorPage() {
 
   // 生成章节推文（封面+摘要）
   const handleGeneratePrologue = async () => {
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -534,7 +542,7 @@ export function EditorPage() {
         title: project.title,
         genre: project.genre || '未分类',
         outline: project.description,
-        deepseekKey: deepseekKey,
+        textConfig: textModelConfig,
       });
     } catch (err) {
       const message = typeof err === 'string' ? err : (err as Error)?.message || '序章生成失败';
@@ -555,7 +563,7 @@ export function EditorPage() {
       return;
     }
 
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setPromoError('请先在设置中配置DeepSeek API Key');
       return;
     }
@@ -570,7 +578,7 @@ export function EditorPage() {
       return;
     }
 
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setPromoError('请先在设置中配置DeepSeek API Key');
       return;
     }
@@ -585,7 +593,7 @@ export function EditorPage() {
         chapterTitle: chapter?.title || '未命名章节',
         chapterContent: content,
         style,
-        deepseekKey: deepseekKey,
+        textConfig: textModelConfig,
       });
 
       // 第二步：生成图片（3:1比例，1200x400）
@@ -675,7 +683,7 @@ export function EditorPage() {
   };
 
   const openIllustrationConfig = () => {
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setIllustrationError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -690,7 +698,7 @@ export function EditorPage() {
   };
 
   const generateIllustrationWithConfig = async (config: IllustrationConfig) => {
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setIllustrationError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -712,7 +720,7 @@ export function EditorPage() {
       const prompt = await invoke<string>('generate_illustration_prompt', {
         text: selectedText,
         style: config.style?.trim() || null,
-        deepseekKey: deepseekKey,
+        textConfig: textModelConfig,
       });
 
       const imageBase64 = await invoke<string>('generate_promo_image', {

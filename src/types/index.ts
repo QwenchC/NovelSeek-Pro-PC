@@ -94,6 +94,28 @@ export interface ApiConfig {
   pollinations_base_url: string;
 }
 
+export type TextModelProvider =
+  | 'deepseek'
+  | 'openai'
+  | 'openrouter'
+  | 'gemini'
+  | 'custom';
+
+export interface TextModelConfig {
+  provider: TextModelProvider;
+  apiKey: string;
+  apiUrl: string;
+  model: string;
+  temperature: number;
+}
+
+export interface TextModelProfile extends TextModelConfig {
+  id: string;
+  name: string;
+  builtIn?: boolean;
+  keyUrl?: string;
+}
+
 export interface SystemFontOption {
   key: string;
   label: string;
@@ -106,7 +128,7 @@ export interface GenerateOutlineInput {
   genre: string;
   description: string;
   target_chapters: number;
-  deepseek_key: string;
+  text_config: TextModelConfig;
 }
 
 export interface GenerateChapterInput {
@@ -116,13 +138,13 @@ export interface GenerateChapterInput {
   previous_summary?: string;
   character_info?: string;
   world_info?: string;
-  deepseek_key: string;
+  text_config: TextModelConfig;
 }
 
 export interface GenerateRevisionInput {
   text: string;
   goals?: string;
-  deepseek_key: string;
+  text_config: TextModelConfig;
 }
 
 export interface ImageGenerationParams {

@@ -10,6 +10,7 @@ import type {
   GenerateRevisionInput,
   GenerateImageInput,
   SystemFontOption,
+  TextModelConfig,
 } from '@typings/index';
 
 // Project API
@@ -42,6 +43,8 @@ export const aiApi = {
   generateRevision: (input: GenerateRevisionInput) =>
     invoke<string>('generate_revision', { input }),
   generateImage: (input: GenerateImageInput) => invoke<string>('generate_image', { input }),
+  testTextConnection: (textConfig: TextModelConfig) =>
+    invoke<boolean>('test_text_connection', { textConfig }),
   testDeepSeek: (apiKey: string) => invoke<boolean>('test_deepseek_connection', { apiKey }),
   testPollinations: (apiKey?: string) =>
     invoke<boolean>('test_pollinations_connection', { apiKey }),

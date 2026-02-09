@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore, Character } from '@store/index';
 import { projectApi, chapterApi } from '@services/api';
@@ -19,10 +19,18 @@ export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { 
-    currentProject, setCurrentProject, deepseekKey, 
+    currentProject, setCurrentProject, textModelConfig, 
     getCharacters, setCharacters,
     setWorldSetting, setTimeline 
   } = useAppStore();
+  const hasValidTextConfig = useMemo(
+    () =>
+      textModelConfig.apiKey.trim().length > 0 &&
+      textModelConfig.apiUrl.trim().length > 0 &&
+      textModelConfig.model.trim().length > 0 &&
+      Number.isFinite(textModelConfig.temperature),
+    [textModelConfig]
+  );
   
   const [outline, setOutline] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -270,7 +278,7 @@ export function OutlinePage() {
   };
 
   const handleGenerate = async () => {
-    if (!deepseekKey) {
+    if (!hasValidTextConfig) {
       setError('请先在设置页面配置 DeepSeek API 密钥');
       return;
     }
@@ -317,7 +325,7 @@ export function OutlinePage() {
           genre: currentProject.genre || '未分类',
           description: currentProject.description || '暂无简介',
           target_chapters: chapterCount,
-          deepseek_key: deepseekKey,
+          text_config: textModelConfig,
           requirements: fullRequirements || undefined,
         }
       });
