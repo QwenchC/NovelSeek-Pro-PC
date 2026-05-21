@@ -15,7 +15,7 @@ Built with `Tauri + React + TypeScript + Rust + SQLite`, it runs fully local wit
 
 ## Version
 
-- Current version: `v1.3.0`
+- Current version: `v1.4.0`
 - Primary platform: Windows
 
 ## Feature Overview
