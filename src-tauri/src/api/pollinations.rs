@@ -2,6 +2,7 @@ use reqwest::Client;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use base64::{Engine as _, engine::general_purpose};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct PollinationsClient {
@@ -37,8 +38,12 @@ impl Default for ImageGenerationParams {
 
 impl PollinationsClient {
     pub fn new(api_key: Option<String>, base_url: Option<String>) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
-            client: Client::new(),
+            client,
             api_key,
             base_url: base_url.unwrap_or_else(|| "https://gen.pollinations.ai".to_string()),
         }

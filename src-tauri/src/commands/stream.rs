@@ -523,9 +523,420 @@ async fn stream_generate(
 }
 
 #[tauri::command]
+pub async fn generate_long_novel_outline_stream(
+    window: Window,
+    title: String,
+    genre: String,
+    description: String,
+    requirements: Option<String>,
+    #[allow(non_snake_case)] existingContext: Option<String>,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+
+    let existing_section = match existingContext.as_deref() {
+        Some(ctx) if !ctx.trim().is_empty() => {
+            if output_language == "en" {
+                format!("\n\n## Existing Material to Build Upon\nThe author has already prepared the following. Please keep these consistent and expand/improve upon them:\n\n{}\n", ctx)
+            } else {
+                format!("\n\n## 已有创作素材（请在此基础上完善）\n作者已有以下内容，请保持一致性并在此基础上扩展完善：\n\n{}\n", ctx)
+            }
+        }
+        _ => String::new(),
+    };
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        (
+            "You are a professional long-form novel story planner. Your task is to create a detailed, structured story plan with world building, characters, plot arcs, and a story timeline. Do NOT produce a fixed chapter-by-chapter outline — instead focus on narrative arcs that can span variable lengths. If existing material is provided, build upon it and keep it consistent. CRITICAL: Output ONLY the structured content starting directly with the first markdown heading. Do NOT include any preamble, greetings, acknowledgements, meta-commentary, or introductory sentences before the first heading.".to_string(),
+            format!(
+                r#"Please create a detailed story plan for the following novel:
+
+Title: {}
+Genre: {}
+Description: {}
+{}{}
+
+Generate the following sections:
+
+## World Overview
+Describe the world, era, social structure, and any special rules or systems.
+
+## Core Characters (3-5 main characters)
+For each character: name, role, personality, motivation, and arc.
+
+## Main Story Throughline
+Summarize the overall journey and central conflict of the novel.
+
+## Story Timeline
+List the major events and milestones in chronological order (not tied to specific chapters).
+
+## Plot Arc Plan (4-7 arcs)
+For each arc, use EXACTLY this heading format (replace N with the arc number):
+### Arc N: [Arc Name]
+- **Core Objective**: What does this arc accomplish?
+- **Primary Conflict**: The central tension driving this arc
+- **Key Turning Point**: The pivotal moment that changes things
+- **Emotional Journey**: The emotional progression for the protagonist
+- **Ending Beat**: How this arc concludes and what changes
+
+## Themes & Depth
+What deeper themes does this story explore?
+
+IMPORTANT: Begin your response immediately with `## World Overview`. Do not write any greeting, acknowledgement, or introduction before the first heading. Use the EXACT section headings listed above (e.g. `## Story Timeline`, `## Plot Arc Plan`)."#,
+                title, genre, description,
+                requirements.as_deref().map(|r| format!("Additional requirements: {}\n", r)).unwrap_or_default(),
+                existing_section
+            )
+        )
+    } else {
+        (
+            "你是一位专业的长篇小说策划师。你的任务是为用户创作一份详尽的故事规划，包含世界观、人物设定、时间线和剧情弧线推进计划。不要生成固定章节数的大纲——聚焦于可弹性延伸的剧情弧线。如果提供了已有素材，请在其基础上保持一致并完善扩展。【重要】直接从第一个Markdown标题开始输出，不要在正文内容之前添加任何问候语、客套话、引导语或元评论。".to_string(),
+            format!(
+                r#"请为以下长篇小说创建详细的故事策划方案：
+
+书名：{}
+题材：{}
+简介：{}
+{}{}
+
+请生成以下内容：
+
+## 世界观概述
+描述故事的世界、时代背景、社会结构和特殊规则体系。
+
+## 核心人物设定（3-5个主要人物）
+每个人物包含：姓名、身份定位、性格特点、核心动机、人物弧线。
+
+## 故事主线
+概述整部小说的核心旅程与中心冲突。
+
+## 时间线
+按时间顺序列出故事中的重大事件与转折节点（不与具体章节绑定）。
+
+## 剧情弧线规划
+每个弧线请严格使用以下标题格式（将N替换为实际序号，如1、2、3）：
+### 弧线N：[弧线名称]
+- **核心目标**：这段剧情要完成什么任务？
+- **主要冲突**：驱动这段剧情的核心张力
+- **关键转折**：改变一切的关键时刻
+- **情感走向**：主角的情感历程演变
+- **结尾收束**：这段弧线如何结束，带来什么变化
+
+## 主题与深度
+这部作品探讨哪些更深层的主题？
+
+【重要】请直接从 `## 世界观概述` 开始输出，第一个字符即为标题，不要在此之前写任何问候、确认或引导性语句。严格使用上述标题格式，例如 `## 时间线`、`## 剧情弧线规划`。"#,
+                title, genre, description,
+                requirements.as_deref().map(|r| format!("额外要求：{}\n", r)).unwrap_or_default(),
+                existing_section
+            )
+        )
+    };
+
+    let full_content = stream_generate(
+        &client,
+        &window,
+        &textConfig,
+        &system_prompt,
+        &user_prompt,
+        "long-novel-outline-stream",
+        6000,
+        0.8,
+    ).await?;
+
+    Ok(full_content)
+}
+
+#[tauri::command]
+pub async fn continue_outline_stream(
+    window: Window,
+    #[allow(non_snake_case)] partialOutline: String,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        (
+            "You are a professional long-form novel story planner. The story plan below was cut off mid-output due to token limits. Continue writing from the exact point of truncation following the same Markdown format and style. Do NOT repeat any already-written content. Start your output immediately from where the text was cut.".to_string(),
+            format!(
+                "The following story plan was truncated. Continue it from where it was cut off. If a section was partially written, complete it first, then proceed with any remaining sections. Maintain the exact same heading format (e.g. `## Story Timeline`, `### Arc N: Name`).\n\n---PARTIAL CONTENT START---\n{}\n---PARTIAL CONTENT END---\n\nContinue from here (output only the continuation, no repetition):",
+                partialOutline
+            )
+        )
+    } else {
+        (
+            "你是一位专业的长篇小说策划师。以下故事策划方案因Token限制而在输出过程中被截断。请从截断处直接接续，严格遵循相同的Markdown格式和标题体系。不要重复任何已有内容，直接从截断处输出续写部分。".to_string(),
+            format!(
+                "以下故事策划方案已被截断，请从截断处直接续写。如果某个章节被截断，先补全该章节再继续后续章节。严格保持相同的标题格式（如 `## 时间线`、`## 剧情弧线规划`、`### 弧线N：名称`）。\n\n---已有内容开始---\n{}\n---已有内容结束---\n\n请从此处续写（只输出续写内容，不要重复上面的内容）：",
+                partialOutline
+            )
+        )
+    };
+
+    let full_content = stream_generate(
+        &client,
+        &window,
+        &textConfig,
+        &system_prompt,
+        &user_prompt,
+        "long-novel-outline-stream",
+        4000,
+        0.75,
+    ).await?;
+
+    Ok(full_content)
+}
+
+#[tauri::command]
+pub async fn generate_character_relationships_stream(
+    window: Window,
+    outline: String,
+    #[allow(non_snake_case)] characterNames: Vec<String>,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+    let names_str = characterNames.join("、");
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        (
+            "You are a story analyst. Extract character relationships from the story outline and output them in strict pipe-delimited format. Output ONLY data lines, no headers or explanations.".to_string(),
+            format!(
+                "Based on the following novel outline, generate the relationship network for these characters: {}\n\n{}\n\nOutput format (one relationship per line):\nCharacter A | Relationship Type | Character B | Brief description\n\nRelationship types: Friends, Enemies, Master/Disciple, Lovers, Family, Rivals, Allies, etc.\nOnly use the exact character names listed above. Output ONLY data lines, nothing else.",
+                names_str, outline
+            ),
+        )
+    } else {
+        (
+            "你是一位故事分析师。从故事大纲中提取角色关系并以严格的竖线分隔格式输出。只输出数据行，不要标题或说明。".to_string(),
+            format!(
+                "根据以下长篇小说大纲，为这些角色生成关系网络：{}\n\n{}\n\n输出格式（每行一对关系）：\n角色A名字 | 关系类型 | 角色B名字 | 关系说明\n\n关系类型：朋友、敌人、师徒、恋人、家人、同伴、对立、主仆、盟友、竞争等。\n角色名字必须使用上述列表中的原名。只输出数据行，不要任何标题、序号或说明文字。",
+                names_str, outline
+            ),
+        )
+    };
+
+    let full_content = stream_generate(
+        &client, &window, &textConfig, &system_prompt, &user_prompt,
+        "character-relations-stream", 2000, 0.7,
+    ).await?;
+    Ok(full_content)
+}
+
+#[tauri::command]
+pub async fn generate_character_events_stream(
+    window: Window,
+    outline: String,
+    #[allow(non_snake_case)] characterNames: Vec<String>,
+    #[allow(non_snake_case)] arcTitles: Vec<String>,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+    let names_str = characterNames.join("、");
+    let arcs_str = if arcTitles.is_empty() {
+        String::new()
+    } else {
+        format!("\n弧线列表：{}", arcTitles.join("、"))
+    };
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        let arcs_note = if arcTitles.is_empty() {
+            String::new()
+        } else {
+            format!("\nArc list: {}", arcTitles.join(", "))
+        };
+        (
+            "You are a story analyst. Extract key character events from the story outline in strict pipe-delimited format. Output ONLY data lines in chronological order.".to_string(),
+            format!(
+                "Based on the following novel outline, generate the event timeline for these characters: {}{}\n\n{}\n\nOutput format (one event per line, chronological):\nCharacter Name | Arc Name | Event Title | Brief description\n\nFor arc name: use the exact name from the arc list, or leave empty if not applicable.\nOnly use exact character names from the list. Output ONLY data lines.",
+                names_str, arcs_note, outline
+            ),
+        )
+    } else {
+        (
+            "你是一位故事分析师。从故事大纲中提取角色关键事件并以严格的竖线分隔格式输出。只输出数据行，不要标题或说明。按故事时序排列。".to_string(),
+            format!(
+                "根据以下长篇小说大纲，为这些角色生成事件时间线：{}{}\n\n{}\n\n输出格式（每行一个事件，按时序排列）：\n角色名字 | 所属弧线名 | 事件标题 | 事件简述\n\n所属弧线名：使用上述弧线列表中的原名，如不属于特定弧线则留空。\n角色名字必须使用上述列表中的原名。只输出数据行，不要任何标题、序号或说明。",
+                names_str, arcs_str, outline
+            ),
+        )
+    };
+
+    let full_content = stream_generate(
+        &client, &window, &textConfig, &system_prompt, &user_prompt,
+        "character-events-stream", 3000, 0.7,
+    ).await?;
+    Ok(full_content)
+}
+
+#[tauri::command]
+pub async fn generate_characters_from_outline_stream(
+    window: Window,
+    outline: String,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        (
+            "You are a story analyst. Extract all named characters from the story outline and output them in strict pipe-delimited format. Output ONLY data lines — no headers, no numbers, no explanations.".to_string(),
+            format!(
+                "Extract all named characters from the following novel outline.\n\n{}\n\nOutput format (one character per line):\nCharacter Name | Gender | Role/Occupation | Personality Traits | Core Motivation | Background Summary\n\nRules:\n- Only include actual characters (people/beings with names), NOT places, arc titles, themes, or concepts\n- Keep each field concise (10-20 words max)\n- Leave a field empty if unknown, do NOT invent\n- Output ONLY data lines, absolutely no headers, numbering, or explanations",
+                outline
+            ),
+        )
+    } else {
+        (
+            "你是一位故事分析师。从故事大纲中提取所有命名角色并以严格的竖线分隔格式输出。只输出数据行，不要标题、序号或任何说明。".to_string(),
+            format!(
+                "从以下长篇小说大纲中提取所有命名角色：\n\n{}\n\n输出格式（每行一个角色）：\n角色名 | 性别 | 身份/职位 | 性格特点 | 核心动机 | 背景简述\n\n【严格要求】\n- 只提取真实的角色（有名字的人物/生命体），绝对不要地点、弧线名称、主题概念等\n- 每个字段简洁（10-20字以内）\n- 未提及的字段留空，不要编造\n- 只输出数据行，不要任何标题、序号或说明文字",
+                outline
+            ),
+        )
+    };
+
+    let full_content = stream_generate(
+        &client, &window, &textConfig, &system_prompt, &user_prompt,
+        "characters-from-outline-stream", 2000, 0.5,
+    ).await?;
+    Ok(full_content)
+}
+
+#[tauri::command]
 pub fn cancel_generation() -> Result<(), String> {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn generate_chapter_outline_stream(
+    window: Window,
+    #[allow(non_snake_case)] previousSummary: String,
+    #[allow(non_snake_case)] userRequirements: String,
+    #[allow(non_snake_case)] arcContext: String,
+    #[allow(non_snake_case)] chapterIndex: u32,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        (
+            "You are a creative writing assistant helping an author plan the next chapter of their novel. Output ONLY the three requested fields in the exact format, nothing else.".to_string(),
+            format!(
+                "Plan Chapter {} for this novel.\n\n{}\n\nRecent chapter endings:\n{}\n\nAuthor's requirements for this chapter:\n{}\n\nOutput EXACTLY three lines, no extra text:\nTitle: [concise chapter title]\nGoal: [what happens this chapter, 1-2 sentences]\nConflict: [the key tension or conflict, 1 sentence]",
+                chapterIndex,
+                if arcContext.is_empty() { "No arc context yet.".to_string() } else { arcContext.clone() },
+                if previousSummary.is_empty() { "(Opening chapter — no prior content)".to_string() } else { previousSummary.clone() },
+                if userRequirements.is_empty() { "Write a transitional chapter that naturally advances the story and maintains tension.".to_string() } else { userRequirements.clone() }
+            ),
+        )
+    } else {
+        (
+            "你是创作助手，协助小说作者规划下一章节。只输出要求格式的三个字段，不要任何额外文字或解释。".to_string(),
+            format!(
+                "为这部小说规划第{}章。\n\n{}\n\n前几章的结尾内容：\n{}\n\n作者对本章的需求/期望：\n{}\n\n请严格输出以下三行，不要任何额外文字：\n标题：[简洁的章节名称]\n目标：[本章发生什么，1-2句话]\n冲突：[关键张力或冲突，1句话]",
+                chapterIndex,
+                if arcContext.is_empty() { "暂无弧线上下文。".to_string() } else { arcContext.clone() },
+                if previousSummary.is_empty() { "（开篇章节，暂无前文内容）".to_string() } else { previousSummary.clone() },
+                if userRequirements.is_empty() { "安排一个过渡性章节，自然推进剧情，保持张力，为后续伏笔做铺垫。".to_string() } else { userRequirements.clone() }
+            ),
+        )
+    };
+
+    let full_content = stream_generate(
+        &client, &window, &textConfig, &system_prompt, &user_prompt,
+        "chapter-outline-stream", 400, 0.85,
+    ).await?;
+    Ok(full_content)
+}
+
+#[tauri::command]
+pub async fn generate_arc_mini_outline_stream(
+    window: Window,
+    #[allow(non_snake_case)] projectTitle: String,
+    #[allow(non_snake_case)] projectOutline: String,
+    #[allow(non_snake_case)] arcTitle: String,
+    #[allow(non_snake_case)] arcSummary: String,
+    #[allow(non_snake_case)] chapterCount: u32,
+    #[allow(non_snake_case)] startChapterNumber: u32,
+    #[allow(non_snake_case)] prevChaptersContext: String,
+    #[allow(non_snake_case)] outputLanguage: Option<String>,
+    #[allow(non_snake_case)] textConfig: TextModelConfigInput,
+) -> Result<String, String> {
+    let _lock = GENERATION_LOCK.lock().await;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+    let client = Client::new();
+    let output_language = normalize_output_language(outputLanguage.as_deref());
+
+    let (system_prompt, user_prompt) = if output_language == "en" {
+        let end_num = startChapterNumber + chapterCount - 1;
+        (
+            "You are an expert novel editor. Break a story arc into a clear, chapter-by-chapter plan. Output ONLY the chapter list in exact format — no extra text.".to_string(),
+            format!(
+                "Novel: {title}\n\nOverall outline:\n{outline}\n\nCurrent story arc: \"{arc_title}\"\nArc description:\n{arc_summary}\n\nPrevious chapters context (the story so far):\n{prev_ctx}\n\nTask: Plan exactly {count} NEW chapters for the \"{arc_title}\" arc.\nThe existing story already has chapters up to Chapter {prev_end}. Your plan must number chapters starting from Chapter {start} through Chapter {end}.\n\nOutput format (one line per chapter, exactly {count} lines, starting at Chapter {start}):\nChapter {start}: [title] — [core event and goal, 1-2 sentences]\nChapter {next}: [title] — [core event and goal, 1-2 sentences]\n...\n\nRules:\n- Number chapters consecutively from {start} to {end}\n- Each chapter must causally follow the previous\n- The opening chapter should connect naturally from prior content\n- The final chapter should conclude this arc's main conflict and plant seeds for the next arc\n- Be specific and story-driven\n- Output ONLY the chapter list, no intro or explanation",
+                title = projectTitle,
+                outline = if projectOutline.is_empty() { "(No overall outline provided)".to_string() } else { projectOutline.clone() },
+                arc_title = arcTitle,
+                arc_summary = if arcSummary.is_empty() { "(No arc description)".to_string() } else { arcSummary.clone() },
+                prev_ctx = if prevChaptersContext.is_empty() { "(Opening arc — no prior chapters)".to_string() } else { prevChaptersContext.clone() },
+                count = chapterCount,
+                start = startChapterNumber,
+                next = startChapterNumber + 1,
+                end = end_num,
+                prev_end = if startChapterNumber > 1 { startChapterNumber - 1 } else { 0 },
+            ),
+        )
+    } else {
+        let end_num = startChapterNumber + chapterCount - 1;
+        (
+            "你是一位经验丰富的小说策划编辑，擅长将宏大的剧情弧线拆解为可操作的章节计划。请严格按要求格式输出，不要添加任何额外说明。".to_string(),
+            format!(
+                "小说信息：\n标题：{title}\n总纲概述：\n{outline}\n\n当前剧情弧线：《{arc_title}》\n弧线描述：\n{arc_summary}\n\n前置章节简况（已有内容）：\n{prev_ctx}\n\n任务：请为【{arc_title}】这一剧情弧线规划{count}章的详细章节安排。\n小说目前已有第1章至第{prev_end}章，本次规划应从第{start}章开始，到第{end}章结束，共{count}章。\n\n输出格式（严格按此格式，每章一行，共{count}行，从第{start}章开始编号）：\n第{start}章：[章节标题] — [本章核心事件与目标，1-2句话]\n第{next}章：[章节标题] — [本章核心事件与目标，1-2句话]\n...\n\n要求：\n- 章节编号从第{start}章连续递增至第{end}章，不得从第1章重新开始\n- 章节之间要有连贯的因果关系和剧情推进\n- 开篇要承接前置章节，结尾要为下一弧线或全书收束埋下伏笔\n- 每章目标明确，核心事件清晰\n- 只输出章节计划，不要任何其他文字",
+                title = projectTitle,
+                outline = if projectOutline.is_empty() { "（暂无总纲）".to_string() } else { projectOutline.clone() },
+                arc_title = arcTitle,
+                arc_summary = if arcSummary.is_empty() { "（暂无弧线描述）".to_string() } else { arcSummary.clone() },
+                prev_ctx = if prevChaptersContext.is_empty() { "（首个弧线，暂无前置章节）".to_string() } else { prevChaptersContext.clone() },
+                count = chapterCount,
+                start = startChapterNumber,
+                next = startChapterNumber + 1,
+                end = end_num,
+                prev_end = if startChapterNumber > 1 { startChapterNumber - 1 } else { 0 },
+            ),
+        )
+    };
+
+    let max_tokens = (chapterCount * 150).max(1500).min(6000);
+    let full_content = stream_generate(
+        &client, &window, &textConfig, &system_prompt, &user_prompt,
+        "arc-mini-outline-stream", max_tokens, 0.75,
+    ).await?;
+    Ok(full_content)
 }
 
 #[tauri::command]
@@ -611,6 +1022,7 @@ pub async fn generate_chapter_stream(
     conflict: String,
     #[allow(non_snake_case)] previousSummary: Option<String>,
     #[allow(non_snake_case)] currentContent: Option<String>,
+    #[allow(non_snake_case)] chapterList: Option<String>,
     #[allow(non_snake_case)] charactersInfo: Option<String>,
     #[allow(non_snake_case)] worldSetting: Option<String>,
     #[allow(non_snake_case)] timeline: Option<String>,
@@ -631,6 +1043,21 @@ pub async fn generate_chapter_stream(
     let temperature = textConfig.normalized_temperature(0.7);
     
     let mut prompt = String::new();
+
+    // Chapter structure overview — gives AI positional awareness in the story
+    if let Some(ref list) = chapterList {
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                "[Novel Chapter Structure]\n{}\n\n",
+                list
+            ));
+        } else {
+            prompt.push_str(&format!(
+                "【小说章节结构】\n{}\n\n",
+                list
+            ));
+        }
+    }
     
     if let Some(ref world) = worldSetting {
         if output_language == "en" {
@@ -705,6 +1132,20 @@ Keep identity/personality/background/motivation consistent:
     }
 
     if is_continue {
+        // Previous chapters context for continuation (same as new-chapter mode)
+        if let Some(ref summary) = previousSummary {
+            if output_language == "en" {
+                prompt.push_str(&format!(
+                    "[Previous chapters — context only. NEVER mention \"Chapter N\", \"the last chapter\", or any structural labels in story prose.]\n{}\n\n",
+                    summary
+                ));
+            } else {
+                prompt.push_str(&format!(
+                    "【前几章结尾内容（仅供衔接参考，正文中绝对不能出现\"第X章\"或任何章节标记）】\n{}\n\n",
+                    summary
+                ));
+            }
+        }
         if output_language == "en" {
             prompt.push_str(&format!(
                 r#"Continue writing this chapter.
@@ -768,7 +1209,7 @@ Core conflict: {}
             if let Some(ref summary) = previousSummary {
                 prompt.push_str(&format!(
                     r#"
-[Previous chapter tail for continuity]
+[Previous chapter tail \u2014 context only. NEVER reference "Chapter N", "the last chapter", or structural labels in your prose.]
 {}
 
 "#,
@@ -784,6 +1225,7 @@ Requirements:
 4. Natural dialogues consistent with character voices.
 5. If previous chapter context exists, connect naturally.
 6. Output plain English prose only (no Markdown).
+7. NEVER include "Chapter N", "in the last chapter", or any structural meta-labels in your prose — those were context markers only.
 
 Start writing the chapter content now:"#,
                 word_target
@@ -801,7 +1243,7 @@ Start writing the chapter content now:"#,
 
             if let Some(ref summary) = previousSummary {
                 prompt.push_str(&format!(r#"
-【前一章结尾内容】（请自然衔接，不要重复）
+【上章结尾内容（仅供行文衔接，绝对不要在正文中提及"第X章"或任何章节标记）】（请自然衔接，不要重复）
 {}
 
 "#, summary));
@@ -815,8 +1257,24 @@ Start writing the chapter content now:"#,
 4. 对话要自然生动，符合角色性格
 5. 如果有前一章内容，请自然衔接，不要突兀
 6. 不要使用markdown格式，直接输出小说正文
+7. 【严禁】正文中绝对不能出现"第X章"、"上一章"、"章节"等元叙事信息，那些只是内部参考标记，不属于故事内容"#, word_target));
+        }
+    }
 
-请直接开始撰写章节内容："#, word_target));
+    // Consistency anchor — repeat character bible at the very end of the user message.
+    // LLMs have highest attention to tokens at the end ("lost in the middle" effect).
+    // This anchor overrides any gender/name/trait drift that accumulated in earlier context.
+    if let Some(ref chars) = charactersInfo {
+        if output_language == "en" {
+            prompt.push_str(&format!(
+                "\n\n[PRE-WRITE CHARACTER LOCK — immutable, takes priority if anything above contradicts]\n{}\n\nBegin writing the chapter now:",
+                chars
+            ));
+        } else {
+            prompt.push_str(&format!(
+                "\n\n【动笔前强制核对 — 以下角色设定绝对不可更改，如与上文任何内容矛盾，以此处为准】\n{}\n\n立即开始写作，直接输出正文，不要添加任何说明：",
+                chars
+            ));
         }
     }
 
@@ -1220,7 +1678,7 @@ Return strict JSON only:
     })
 }
 
-/// 使用Pollinations生成图片
+/// 图片生成：支持 Pollinations 和 ComfyUI 两种引擎
 #[tauri::command]
 pub async fn generate_promo_image(
     prompt: String,
@@ -1228,21 +1686,43 @@ pub async fn generate_promo_image(
     height: Option<u32>,
     model: Option<String>,
     #[allow(non_snake_case)] pollinationsKey: Option<String>,
+    engine: Option<String>,
+    #[allow(non_snake_case)] comfyuiUrl: Option<String>,
+    #[allow(non_snake_case)] negativePrompt: Option<String>,
 ) -> Result<String, String> {
-    use crate::api::pollinations::{PollinationsClient, ImageGenerationParams};
-    
-    let client = PollinationsClient::new(pollinationsKey, None);
-    
-    let params = ImageGenerationParams {
-        prompt,
-        width: Some(width.unwrap_or(1200)),  // 默认3:1比例
-        height: Some(height.unwrap_or(400)),
-        seed: Some(-1),
-        model: Some(model.unwrap_or_else(|| "zimage".to_string())),
-        nologo: Some(true),
-        enhance: Some(false),
-    };
+    let engine = engine.as_deref().unwrap_or("pollinations");
 
-    client.generate_image_base64(&params).await
-        .map_err(|e| format!("图片生成失败: {}", e))
+    if engine == "comfyui" {
+        use crate::api::ComfyUIClient;
+
+        let client = ComfyUIClient::new(comfyuiUrl);
+        let w = width.unwrap_or(1024);
+        let h = height.unwrap_or(1024);
+        let negative = negativePrompt.unwrap_or_else(|| {
+            "low quality, worst quality, deformed, mutated hands, mutated fingers, extra limbs, missing arms, signature, watermark, username, logo".to_string()
+        });
+
+        client
+            .generate_image_base64(&prompt, &negative, w, h)
+            .await
+            .map_err(|e| format!("ComfyUI 图片生成失败: {}", e))
+    } else {
+        use crate::api::pollinations::{PollinationsClient, ImageGenerationParams};
+
+        let client = PollinationsClient::new(pollinationsKey, None);
+        let params = ImageGenerationParams {
+            prompt,
+            width: Some(width.unwrap_or(1200)),
+            height: Some(height.unwrap_or(400)),
+            seed: Some(-1),
+            model: Some(model.unwrap_or_else(|| "zimage".to_string())),
+            nologo: Some(true),
+            enhance: Some(false),
+        };
+
+        client
+            .generate_image_base64(&params)
+            .await
+            .map_err(|e| format!("Pollinations 图片生成失败: {}", e))
+    }
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '@store/index';
 import { aiApi } from '@services/api';
 import { Button } from '@components/Button';
-import type { TextModelConfig, TextModelProfile, TextModelProvider } from '@typings/index';
+import type { ImageEngine, TextModelConfig, TextModelProfile, TextModelProvider } from '@typings/index';
 import { CheckCircle, ExternalLink, Eye, EyeOff, Image, Key, Plus, Trash2, XCircle } from 'lucide-react';
 import { tx } from '@utils/i18n';
 
@@ -81,25 +81,37 @@ export function SettingsPage() {
     textModelProfiles,
     activeTextModelProfileId,
     pollinationsKey,
+    imageEngine,
+    comfyUIUrl,
     setTextModelProfiles,
     setActiveTextModelProfileId,
     setTextModelConfig,
     setPollinationsKey,
+    setImageEngine,
+    setComfyUIUrl,
   } = useAppStore();
 
   const [localProfiles, setLocalProfiles] = useState<TextModelProfile[]>(textModelProfiles);
   const [localActiveProfileId, setLocalActiveProfileId] = useState(activeTextModelProfileId);
   const [newPlatformName, setNewPlatformName] = useState('');
   const [localPollinationsKey, setLocalPollinationsKey] = useState(pollinationsKey);
+  const [localImageEngine, setLocalImageEngine] = useState<ImageEngine>(imageEngine);
+  const [localComfyUIUrl, setLocalComfyUIUrl] = useState(comfyUIUrl);
   const [showTextKey, setShowTextKey] = useState(false);
   const [showPollinationsKey, setShowPollinationsKey] = useState(false);
   const [textStatus, setTextStatus] = useState<Status>('idle');
   const [pollinationsStatus, setPollinationsStatus] = useState<Status>('idle');
+  const [comfyUIStatus, setComfyUIStatus] = useState<Status>('idle');
 
   useEffect(() => {
     setLocalProfiles(textModelProfiles);
     setLocalActiveProfileId(activeTextModelProfileId);
   }, [textModelProfiles, activeTextModelProfileId]);
+
+  useEffect(() => {
+    setLocalImageEngine(imageEngine);
+    setLocalComfyUIUrl(comfyUIUrl);
+  }, [imageEngine, comfyUIUrl]);
 
   const activeProfile = useMemo(() => {
     return (
@@ -179,6 +191,19 @@ export function SettingsPage() {
     }
   };
 
+  const testComfyUI = async () => {
+    setComfyUIStatus('testing');
+    try {
+      const { invoke } = await import('@tauri-apps/api/tauri');
+      const result = await invoke<boolean>('test_comfyui_connection', {
+        comfyuiUrl: localComfyUIUrl.trim() || undefined,
+      });
+      setComfyUIStatus(result ? 'success' : 'error');
+    } catch {
+      setComfyUIStatus('error');
+    }
+  };
+
   const saveSettings = () => {
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
       alert(
@@ -204,6 +229,8 @@ export function SettingsPage() {
     setActiveTextModelProfileId(normalizedActive.id);
     setTextModelConfig(toTextConfig(normalizedActive));
     setPollinationsKey(localPollinationsKey.trim());
+    setImageEngine(localImageEngine);
+    setComfyUIUrl(localComfyUIUrl.trim() || 'http://localhost:8188');
 
     alert(tx(uiLanguage, '设置已保存', 'Settings saved'));
   };
@@ -414,22 +441,61 @@ export function SettingsPage() {
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <div className="flex items-center space-x-2 mb-4">
             <Image className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Pollinations API</h2>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+              {tx(uiLanguage, '图片生成引擎', 'Image Generation Engine')}
+            </h2>
           </div>
 
-          <div className="mb-3">
-            <a
-              href="https://pollinations.ai"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
-            >
-              {tx(uiLanguage, '访问 Pollinations 官网', 'Visit Pollinations Official Site')}
-              <ExternalLink className="w-3 h-3 ml-1" />
-            </a>
+          {/* Engine selector */}
+          <div className="mb-5">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              {tx(uiLanguage, '当前引擎', 'Active Engine')}
+            </label>
+            <div className="flex gap-3">
+              {(['pollinations', 'comfyui'] as ImageEngine[]).map((eng) => (
+                <label
+                  key={eng}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer transition-colors ${
+                    localImageEngine === eng
+                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-950/30 text-primary-700 dark:text-primary-300'
+                      : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="imageEngine"
+                    value={eng}
+                    checked={localImageEngine === eng}
+                    onChange={() => setLocalImageEngine(eng)}
+                    className="accent-primary-500"
+                  />
+                  {eng === 'pollinations' ? 'Pollinations' : 'ComfyUI'}
+                </label>
+              ))}
+            </div>
           </div>
 
-          <div className="space-y-4">
+          {/* Pollinations config */}
+          <div
+            className={`space-y-4 rounded-lg border p-4 transition-opacity ${
+              localImageEngine === 'pollinations'
+                ? 'border-primary-300 dark:border-primary-700'
+                : 'border-gray-200 dark:border-gray-700 opacity-60'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-gray-800 dark:text-gray-200">Pollinations API</span>
+              <a
+                href="https://pollinations.ai"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+              >
+                {tx(uiLanguage, '访问官网', 'Official Site')}
+                <ExternalLink className="w-3 h-3 ml-1" />
+              </a>
+            </div>
+
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -465,12 +531,12 @@ export function SettingsPage() {
             </div>
 
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              {tx(uiLanguage, '不配置 API Key 也可使用，但可能会受到频率限制。', 'Works without API key, but may be rate-limited.')}
+              {tx(uiLanguage, '不配置 API Key 也可使用，但可能受到频率限制。', 'Works without API key, but may be rate-limited.')}
             </p>
 
             <div className="flex items-center space-x-2">
               <Button onClick={testPollinations} loading={pollinationsStatus === 'testing'}>
-                {tx(uiLanguage, '测试 Pollinations 连接', 'Test Pollinations Connection')}
+                {tx(uiLanguage, '测试 Pollinations 连接', 'Test Pollinations')}
               </Button>
               {pollinationsStatus === 'success' && (
                 <div className="flex items-center text-green-600 dark:text-green-400">
@@ -481,7 +547,56 @@ export function SettingsPage() {
               {pollinationsStatus === 'error' && (
                 <div className="flex items-center text-red-600 dark:text-red-400">
                   <XCircle className="w-4 h-4 mr-1" />
-                  <span className="text-sm">{tx(uiLanguage, '连接失败', 'Connection Failed')}</span>
+                  <span className="text-sm">{tx(uiLanguage, '连接失败', 'Failed')}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ComfyUI config */}
+          <div
+            className={`mt-4 space-y-4 rounded-lg border p-4 transition-opacity ${
+              localImageEngine === 'comfyui'
+                ? 'border-primary-300 dark:border-primary-700'
+                : 'border-gray-200 dark:border-gray-700 opacity-60'
+            }`}
+          >
+            <span className="font-medium text-gray-800 dark:text-gray-200">ComfyUI</span>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {tx(uiLanguage, '服务地址', 'Server URL')}
+              </label>
+              <input
+                value={localComfyUIUrl}
+                onChange={(event) => setLocalComfyUIUrl(event.target.value)}
+                placeholder="http://localhost:8188"
+                className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+              />
+            </div>
+
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {tx(
+                uiLanguage,
+                '使用工作流：t2i-lumicreate（z-image-turbo 模型，无 LoRA）。请确保 ComfyUI 正在运行并已加载所需模型。',
+                'Uses workflow: t2i-lumicreate (z-image-turbo, no LoRA). Ensure ComfyUI is running with required models loaded.'
+              )}
+            </p>
+
+            <div className="flex items-center space-x-2">
+              <Button onClick={testComfyUI} loading={comfyUIStatus === 'testing'}>
+                {tx(uiLanguage, '测试 ComfyUI 连接', 'Test ComfyUI')}
+              </Button>
+              {comfyUIStatus === 'success' && (
+                <div className="flex items-center text-green-600 dark:text-green-400">
+                  <CheckCircle className="w-4 h-4 mr-1" />
+                  <span className="text-sm">{tx(uiLanguage, '连接成功', 'Connected')}</span>
+                </div>
+              )}
+              {comfyUIStatus === 'error' && (
+                <div className="flex items-center text-red-600 dark:text-red-400">
+                  <XCircle className="w-4 h-4 mr-1" />
+                  <span className="text-sm">{tx(uiLanguage, '连接失败，请确认 ComfyUI 已启动', 'Connection failed. Ensure ComfyUI is running.')}</span>
                 </div>
               )}
             </div>

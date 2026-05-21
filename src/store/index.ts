@@ -2,16 +2,21 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
   Chapter,
+  ImageEngine,
   Project,
+  ProjectFolder,
   TextModelConfig,
   TextModelProfile,
   TextModelProvider,
   UiLanguage,
 } from '@typings/index';
 
+export type { ProjectFolder };
+
 export interface Character {
   id: string;
   name: string;
+  gender: string;
   role: string;
   personality: string;
   background: string;
@@ -28,10 +33,44 @@ export interface ChapterPromo {
   imageBase64: string | null;
 }
 
+// ── Long Novel types ──────────────────────────────────────────
+export type NovelType = 'short' | 'long';
+
+export interface PlotArc {
+  id: string;
+  title: string;
+  summary: string;
+  order: number;
+  status: 'upcoming' | 'active' | 'ending' | 'completed';
+  chaptersUntilEnd?: number;
+  chapterCount: number;
+  miniOutline?: string;
+  builtChapterIds?: string[];
+}
+
+export interface CharacterRelationship {
+  id: string;
+  fromCharId: string;
+  toCharId: string;
+  type: string;
+  description: string;
+}
+
+export interface CharacterEvent {
+  id: string;
+  characterId: string;
+  arcId: string;
+  chapterIndex: number;
+  chapterTitle: string;
+  title: string;
+  description: string;
+}
+
 function normalizeCharacterRecord(character: Partial<Character>, index = 0): Character {
   return {
     id: character.id || `char-${Date.now()}-${index}`,
     name: character.name || `角色${index + 1}`,
+    gender: character.gender || '',
     role: character.role || '',
     personality: character.personality || '',
     background: character.background || '',
@@ -267,6 +306,8 @@ interface AppState {
   textModelProfiles: TextModelProfile[];
   activeTextModelProfileId: string;
   pollinationsKey: string;
+  imageEngine: ImageEngine;
+  comfyUIUrl: string;
   setTextModelConfig: (config: TextModelConfig) => void;
   updateTextModelConfig: (patch: Partial<TextModelConfig>) => void;
   setTextModelProfiles: (profiles: TextModelProfile[]) => void;
@@ -275,6 +316,8 @@ interface AppState {
   updateTextModelProfile: (profileId: string, patch: Partial<TextModelProfile>) => void;
   removeTextModelProfile: (profileId: string) => void;
   setPollinationsKey: (key: string) => void;
+  setImageEngine: (engine: ImageEngine) => void;
+  setComfyUIUrl: (url: string) => void;
 
   sidebarOpen: boolean;
   mobileMenuOpen: boolean;
@@ -291,6 +334,38 @@ interface AppState {
   generationProgress: string;
   setIsGenerating: (isGenerating: boolean) => void;
   setGenerationProgress: (progress: string) => void;
+
+  folders: ProjectFolder[];
+  addFolder: (name: string, emoji: string) => string;
+  updateFolder: (folderId: string, name: string, emoji: string) => void;
+  deleteFolder: (folderId: string) => void;
+  moveProjectToFolder: (projectId: string, folderId: string | null) => void;
+
+  // Long novel state
+  novelTypeByProject: Record<string, NovelType>;
+  setNovelType: (projectId: string, type: NovelType) => void;
+  getNovelType: (projectId: string) => NovelType;
+
+  plotArcsByProject: Record<string, PlotArc[]>;
+  setPlotArcs: (projectId: string, arcs: PlotArc[]) => void;
+  getPlotArcs: (projectId: string) => PlotArc[];
+  addPlotArc: (projectId: string, arc: Omit<PlotArc, 'id'>) => string;
+  updatePlotArc: (projectId: string, arcId: string, patch: Partial<PlotArc>) => void;
+  deletePlotArc: (projectId: string, arcId: string) => void;
+
+  longNovelOutlineByProject: Record<string, string>;
+  setLongNovelOutline: (projectId: string, outline: string) => void;
+  getLongNovelOutline: (projectId: string) => string;
+
+  characterRelationshipsByProject: Record<string, CharacterRelationship[]>;
+  setCharacterRelationships: (projectId: string, rels: CharacterRelationship[]) => void;
+  getCharacterRelationships: (projectId: string) => CharacterRelationship[];
+
+  characterEventsByProject: Record<string, CharacterEvent[]>;
+  setCharacterEvents: (projectId: string, events: CharacterEvent[]) => void;
+  getCharacterEvents: (projectId: string) => CharacterEvent[];
+  addCharacterEvent: (projectId: string, event: Omit<CharacterEvent, 'id'>) => void;
+  deleteCharacterEvent: (projectId: string, eventId: string) => void;
 }
 
 const initialProfiles = cloneBuiltinProfiles();
@@ -353,6 +428,9 @@ export const useAppStore = create<AppState>()(
       activeTextModelProfileId: initialActiveProfile.id,
       textModelConfig: toTextModelConfig(initialActiveProfile),
       pollinationsKey: '',
+
+      imageEngine: 'pollinations' as ImageEngine,
+      comfyUIUrl: 'http://localhost:8188',
 
       setTextModelConfig: (textModelConfig) =>
         set((state) => {
@@ -499,6 +577,9 @@ export const useAppStore = create<AppState>()(
 
       setPollinationsKey: (pollinationsKey) => set({ pollinationsKey }),
 
+      setImageEngine: (imageEngine) => set({ imageEngine }),
+      setComfyUIUrl: (comfyUIUrl) => set({ comfyUIUrl }),
+
       sidebarOpen: true,
       mobileMenuOpen: false,
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
@@ -517,21 +598,145 @@ export const useAppStore = create<AppState>()(
       generationProgress: '',
       setIsGenerating: (isGenerating) => set({ isGenerating }),
       setGenerationProgress: (generationProgress) => set({ generationProgress }),
+
+      folders: [],
+      addFolder: (name, emoji) => {
+        const id = `folder-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        set((state) => ({
+          folders: [...state.folders, { id, name, emoji, projectIds: [] }],
+        }));
+        return id;
+      },
+      updateFolder: (folderId, name, emoji) =>
+        set((state) => ({
+          folders: state.folders.map((f) =>
+            f.id === folderId ? { ...f, name, emoji } : f
+          ),
+        })),
+      deleteFolder: (folderId) =>
+        set((state) => ({
+          folders: state.folders.filter((f) => f.id !== folderId),
+        })),
+      moveProjectToFolder: (projectId, folderId) =>
+        set((state) => ({
+          folders: state.folders.map((f) => {
+            if (folderId === null || f.id !== folderId) {
+              // Remove from this folder
+              return { ...f, projectIds: f.projectIds.filter((pid) => pid !== projectId) };
+            }
+            // Add to this folder (avoid duplicates)
+            if (f.projectIds.includes(projectId)) return f;
+            return { ...f, projectIds: [...f.projectIds, projectId] };
+          }),
+        })),
+
+      // ── Long novel implementations ──────────────────────────
+      novelTypeByProject: {},
+      setNovelType: (projectId, type) =>
+        set((state) => ({
+          novelTypeByProject: { ...state.novelTypeByProject, [projectId]: type },
+        })),
+      getNovelType: (projectId) => get().novelTypeByProject[projectId] || 'short',
+
+      plotArcsByProject: {},
+      setPlotArcs: (projectId, arcs) =>
+        set((state) => ({
+          plotArcsByProject: { ...state.plotArcsByProject, [projectId]: arcs },
+        })),
+      getPlotArcs: (projectId) => get().plotArcsByProject[projectId] || [],
+      addPlotArc: (projectId, arc) => {
+        const id = `arc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        set((state) => ({
+          plotArcsByProject: {
+            ...state.plotArcsByProject,
+            [projectId]: [...(state.plotArcsByProject[projectId] || []), { ...arc, id }],
+          },
+        }));
+        return id;
+      },
+      updatePlotArc: (projectId, arcId, patch) =>
+        set((state) => ({
+          plotArcsByProject: {
+            ...state.plotArcsByProject,
+            [projectId]: (state.plotArcsByProject[projectId] || []).map((a) =>
+              a.id === arcId ? { ...a, ...patch } : a
+            ),
+          },
+        })),
+      deletePlotArc: (projectId, arcId) =>
+        set((state) => ({
+          plotArcsByProject: {
+            ...state.plotArcsByProject,
+            [projectId]: (state.plotArcsByProject[projectId] || []).filter((a) => a.id !== arcId),
+          },
+        })),
+
+      longNovelOutlineByProject: {},
+      setLongNovelOutline: (projectId, outline) =>
+        set((state) => ({
+          longNovelOutlineByProject: { ...state.longNovelOutlineByProject, [projectId]: outline },
+        })),
+      getLongNovelOutline: (projectId) => get().longNovelOutlineByProject[projectId] || '',
+
+      characterRelationshipsByProject: {},
+      setCharacterRelationships: (projectId, rels) =>
+        set((state) => ({
+          characterRelationshipsByProject: {
+            ...state.characterRelationshipsByProject,
+            [projectId]: rels,
+          },
+        })),
+      getCharacterRelationships: (projectId) =>
+        get().characterRelationshipsByProject[projectId] || [],
+
+      characterEventsByProject: {},
+      setCharacterEvents: (projectId, events) =>
+        set((state) => ({
+          characterEventsByProject: { ...state.characterEventsByProject, [projectId]: events },
+        })),
+      getCharacterEvents: (projectId) => get().characterEventsByProject[projectId] || [],
+      addCharacterEvent: (projectId, event) =>
+        set((state) => ({
+          characterEventsByProject: {
+            ...state.characterEventsByProject,
+            [projectId]: [
+              ...(state.characterEventsByProject[projectId] || []),
+              { ...event, id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` },
+            ],
+          },
+        })),
+      deleteCharacterEvent: (projectId, eventId) =>
+        set((state) => ({
+          characterEventsByProject: {
+            ...state.characterEventsByProject,
+            [projectId]: (state.characterEventsByProject[projectId] || []).filter(
+              (e) => e.id !== eventId
+            ),
+          },
+        })),
     }),
     {
       name: 'novelseek-storage',
-      version: 4,
+      version: 7,
       partialize: (state) => ({
         textModelConfig: state.textModelConfig,
         textModelProfiles: state.textModelProfiles,
         activeTextModelProfileId: state.activeTextModelProfileId,
         pollinationsKey: state.pollinationsKey,
+        imageEngine: state.imageEngine,
+        comfyUIUrl: state.comfyUIUrl,
         charactersByProject: state.charactersByProject,
         worldSettingByProject: state.worldSettingByProject,
         timelineByProject: state.timelineByProject,
         promoByChapter: state.promoByChapter,
         theme: state.theme,
         uiLanguage: state.uiLanguage,
+        folders: state.folders,
+        novelTypeByProject: state.novelTypeByProject,
+        plotArcsByProject: state.plotArcsByProject,
+        longNovelOutlineByProject: state.longNovelOutlineByProject,
+        characterRelationshipsByProject: state.characterRelationshipsByProject,
+        characterEventsByProject: state.characterEventsByProject,
       }),
       migrate: (persistedState: any, version) => {
         if (!persistedState || typeof persistedState !== 'object') {
@@ -609,6 +814,29 @@ export const useAppStore = create<AppState>()(
             persistedState.uiLanguage === 'en' || persistedState.uiLanguage === 'zh'
               ? persistedState.uiLanguage
               : getInitialUiLanguage();
+        }
+
+        if (version < 5) {
+          if (!Array.isArray(persistedState.folders)) {
+            persistedState.folders = [];
+          }
+        }
+
+        if (version < 6) {
+          if (!persistedState.imageEngine) {
+            persistedState.imageEngine = 'pollinations';
+          }
+          if (!persistedState.comfyUIUrl) {
+            persistedState.comfyUIUrl = 'http://localhost:8188';
+          }
+        }
+
+        if (version < 7) {
+          if (!persistedState.novelTypeByProject) persistedState.novelTypeByProject = {};
+          if (!persistedState.plotArcsByProject) persistedState.plotArcsByProject = {};
+          if (!persistedState.longNovelOutlineByProject) persistedState.longNovelOutlineByProject = {};
+          if (!persistedState.characterRelationshipsByProject) persistedState.characterRelationshipsByProject = {};
+          if (!persistedState.characterEventsByProject) persistedState.characterEventsByProject = {};
         }
 
         return persistedState;

@@ -57,6 +57,8 @@ export function EditorPage() {
   const {
     textModelConfig,
     pollinationsKey,
+    imageEngine,
+    comfyUIUrl,
     getCharacters,
     getWorldSetting,
     getTimeline,
@@ -268,16 +270,28 @@ export function EditorPage() {
   // 获取前一章的内容摘要用于上下文连贯
   const getPreviousChapterSummary = (): string | null => {
     if (!chapter || !allChapters.length) return null;
-    
-    const prevChapter = allChapters.find(c => c.order_index === chapter.order_index - 1);
-    if (!prevChapter) return null;
-    
-    const prevContent = prevChapter.draft_text || prevChapter.final_text;
-    if (!prevContent) return null;
-    
-    // 取前一章最后1500字作为上下文
-    const lastPart = prevContent.slice(-1500);
-    return `【前一章结尾】\n${lastPart}`;
+
+    // Collect up to 3 written chapters before the current one
+    const prevChapters = allChapters
+      .filter(c => c.order_index < chapter.order_index && (c.draft_text || c.final_text))
+      .sort((a, b) => b.order_index - a.order_index)
+      .slice(0, 3)
+      .reverse(); // restore chronological order
+
+    if (prevChapters.length === 0) return null;
+
+    const parts: string[] = [];
+    // Earlier chapters: last 400 chars each, for broader story awareness
+    for (const c of prevChapters.slice(0, -1)) {
+      const content = (c.draft_text || c.final_text) ?? '';
+      parts.push(`【${c.title || `第${c.order_index}章`}结尾片段】\n${content.slice(-400)}`);
+    }
+    // Most recent chapter: last 1500 chars for natural continuation
+    const lastChap = prevChapters[prevChapters.length - 1];
+    const lastContent = (lastChap.draft_text || lastChap.final_text) ?? '';
+    parts.push(`【前一章结尾】\n${lastContent.slice(-1500)}`);
+
+    return parts.join('\n\n');
   };
 
   // 获取当前内容的结尾部分用于续写
@@ -479,7 +493,7 @@ export function EditorPage() {
       const charactersInfo = characters.length > 0 
         ? characters.map((c, i) => {
             const isProtag = c.isProtagonist ? '【主角】' : '';
-            return `${i + 1}. ${c.name}${isProtag}\n   - 身份：${c.role || '未设定'}\n   - 性格：${c.personality || '未设定'}\n   - 背景：${c.background || '未设定'}\n   - 动机：${c.motivation || '未设定'}\n   - 形象：${c.appearance || '未设定'}`;
+            return `${i + 1}. ${c.name}${isProtag}\n   - 性别：${c.gender || '未设定'}\n   - 身份：${c.role || '未设定'}\n   - 性格：${c.personality || '未设定'}\n   - 背景：${c.background || '未设定'}\n   - 动机：${c.motivation || '未设定'}\n   - 形象：${c.appearance || '未设定'}`;
           }).join('\n')
         : null;
 
@@ -633,6 +647,8 @@ export function EditorPage() {
         width: 1200,
         height: 400,
         pollinationsKey: pollinationsKey || null,
+        engine: imageEngine,
+        comfyuiUrl: comfyUIUrl || null,
       });
 
       const newPromoResult = {
@@ -766,6 +782,8 @@ export function EditorPage() {
         height: config.height,
         model: config.model,
         pollinationsKey: pollinationsKey || null,
+        engine: imageEngine,
+        comfyuiUrl: comfyUIUrl || null,
       });
 
       const newIllustration: Illustration = {

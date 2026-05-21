@@ -40,6 +40,38 @@ const sanitizeCharacterName = (line: string): string =>
 const isInvalidCharacterName = (name: string): boolean =>
   /^(主要角色|main characters?)$/i.test(name.trim());
 
+/**
+ * Clean up common AI output artifacts in the generated outline:
+ * 1. Strip conversational preamble before the first ## heading
+ * 2. Fix missing space after heading markers (###Title → ### Title)
+ * 3. Remove empty-bold artifacts (****) left by AI omitting field names
+ * 4. Collapse excessive blank lines
+ */
+const sanitizeOutline = (raw: string): string => {
+  let text = raw.trim();
+
+  // 1. Strip any text before the first ## heading (preamble like "好的，收到您的请求。")
+  const headingIdx = text.search(/^##\s+\S/m);
+  if (headingIdx > 0) {
+    text = text.slice(headingIdx).trim();
+  }
+
+  // 2. Fix missing space after heading markers: ###Title → ### Title
+  text = text.replace(/^(#{1,6})([^\s#\n])/gm, '$1 $2');
+
+  // 3. Fix empty bold artifacts:
+  //    a) "word****" → "word**" (AI appended an extra empty-bold after the closing **, e.g. **身份****)
+  //       Without this step, removing **** would strip the closing ** and leave unclosed bold.
+  text = text.replace(/([^\s*])\*{4}/g, '$1**');
+  //    b) Remaining standalone **** (preceded by whitespace, e.g. "- ****：内容") → remove
+  text = text.replace(/\*{4}/g, '');
+
+  // 4. Collapse 3+ consecutive blank lines to 2
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  return text.trim();
+};
+
 export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -68,6 +100,16 @@ export function OutlinePage() {
   const [headingItemPolicy, setHeadingItemPolicy] = useState<Record<string, boolean>>({});
   
   const contentRef = useRef<HTMLDivElement>(null);
+  const prevIsGeneratingRef = useRef(false);
+
+  // After generation finishes, sanitize the accumulated outline text
+  useEffect(() => {
+    if (prevIsGeneratingRef.current && !isGenerating && outline) {
+      const cleaned = sanitizeOutline(outline);
+      if (cleaned !== outline) setOutline(cleaned);
+    }
+    prevIsGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
 
   useEffect(() => {
     if (id) {
@@ -293,7 +335,8 @@ export function OutlinePage() {
       const project = await projectApi.getById(projectId);
       setCurrentProject(project);
       // 如果项目已有大纲，加载它
-      if (project?.description && project.description.includes('## 故事梗概')) {
+      // Load outline if the description contains any markdown ## heading (works for both zh and en)
+      if (project?.description && /^##\s+\S/m.test(project.description)) {
         setOutline(project.description);
         setIsSaved(true);
       }
@@ -486,8 +529,8 @@ export function OutlinePage() {
     console.log('=== 开始解析角色 ===');
     console.log('大纲内容长度:', outlineText.length);
     
-    // 匹配 "## 主要角色" 部分（支持中英文标题）
-    const characterSection = outlineText.match(/##\s*(主要角色|Main Characters?)\b[\s\S]*?(?=\n##\s|$)/i);
+    // 匹配 "## 主要角色" 部分（支持中英文及多种标题变体）
+    const characterSection = outlineText.match(/##\s*(主要角色|主要人物|角色介绍|人物设定|Main Characters?)[\s\S]*?(?=\n##\s|$)/i);
     if (!characterSection) {
       console.log('未找到主要角色部分');
       return [];
@@ -496,13 +539,13 @@ export function OutlinePage() {
     console.log('找到角色部分:', characterSection[0].substring(0, 200));
 
     const parsed: Character[] = [];
-    // 按 ### 分割角色块
+    // 按 ### 或 #### 分割角色块
     const blocks = characterSection[0]
-      .split(/\n###\s+/)
+      .split(/\n#{3,4}\s+/)
       .filter(
         block =>
           block.trim() &&
-          !/^\s*(主要角色|Main Characters?)\s*$/i.test(block.trim())
+          !/^\s*(主要角色|主要人物|角色介绍|人物设定|Main Characters?)\s*$/i.test(block.trim())
       );
     
     console.log('角色块数量:', blocks.length);
@@ -534,6 +577,7 @@ export function OutlinePage() {
         background: '',
         motivation: '',
         appearance: '',
+        gender: '',
         isProtagonist: parsed.length === 0,
       };
 

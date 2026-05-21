@@ -1,5 +1,12 @@
 export type UiLanguage = 'zh' | 'en';
 
+export interface ProjectFolder {
+  id: string;
+  name: string;
+  emoji: string;
+  projectIds: string[];
+}
+
 export interface Project {
   id: string;
   title: string;
@@ -196,3 +203,5 @@ export interface GenerateImageInput {
   save_path: string;
   pollinations_key?: string;
 }
+
+export type ImageEngine = 'pollinations' | 'comfyui';

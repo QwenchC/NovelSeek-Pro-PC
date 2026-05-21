@@ -5,7 +5,7 @@ import { useAppStore, Character } from '@store/index';
 import { aiApi, projectApi } from '@services/api';
 import type { Project } from '@typings/index';
 import { Button } from '@components/Button';
-import { ArrowLeft, Plus, Edit, Trash2, User, Save, Star, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plus, Edit, Trash2, User, Save, Star, Sparkles, AlertCircle, Check } from 'lucide-react';
 import { confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
 
@@ -19,8 +19,8 @@ const isCharacterSectionHeadingLine = (line: string): boolean =>
 const isCharacterFieldLine = (line: string): boolean => {
   const normalized = line.replace(/\*\*/g, '').trim();
   return (
-    /(身份|性格|背景|动机|形象)\s*[：:]/.test(normalized) ||
-    /(role|personality|background|motivation|appearance)\s*[:：]/i.test(normalized)
+    /(身份|性格|背景|动机|形象|性别)\s*[：:]/.test(normalized) ||
+    /(role|personality|background|motivation|appearance|gender)\s*[:：]/i.test(normalized)
   );
 };
 
@@ -39,6 +39,7 @@ const isInvalidCharacterName = (name: string): boolean =>
 const normalizeCharacter = (raw: Partial<Character>, index = 0): Character => ({
   id: raw.id || `char-${Date.now()}-${index}`,
   name: raw.name || `角色${index + 1}`,
+  gender: raw.gender || '',
   role: raw.role || '',
   personality: raw.personality || '',
   background: raw.background || '',
@@ -61,6 +62,7 @@ const buildCharactersMarkdown = (characters: Character[]): string =>
     .map(
       (char, index) => `
 ### ${index + 1}. ${char.name}
+- **性别**：${char.gender || '待设定'}
 - **身份**：${char.role || (char.isProtagonist ? '主角' : '配角')}
 - **性格**：${char.personality || '待设定'}
 - **背景**：${char.background || '待设定'}
@@ -71,8 +73,8 @@ const buildCharactersMarkdown = (characters: Character[]): string =>
     .join('\n');
 
 const upsertCharacterSection = (originalOutline: string, charactersMarkdown: string): string => {
-  const sectionRegex = /##\s*(主要角色|Main Characters?)\b[\s\S]*?(?=\n##\s|$)/i;
-  const headingMatch = originalOutline.match(/^##\s*(主要角色|Main Characters?)\b/im);
+  const sectionRegex = /##\s*(主要角色|Main Characters?)[\s\S]*?(?=\n##\s|$)/i;
+  const headingMatch = originalOutline.match(/^##\s*(主要角色|Main Characters?)/im);
   const sectionHeading =
     headingMatch && /main characters?/i.test(headingMatch[0])
       ? '## Main Characters'
@@ -82,6 +84,21 @@ const upsertCharacterSection = (originalOutline: string, charactersMarkdown: str
   }
   return `${sectionHeading}\n${charactersMarkdown}\n\n${originalOutline}`;
 };
+
+interface FieldDiff {
+  field: keyof Pick<Character, 'gender' | 'role' | 'personality' | 'background' | 'motivation' | 'appearance'>;
+  label: string;
+  current: string;
+  fromOutline: string;
+}
+
+interface CharacterDiff {
+  storedId: string | null; // null = new character from outline
+  name: string;
+  isNew: boolean;
+  fields: FieldDiff[];
+  outlineChar: Character;
+}
 
 const normalizeValidCharacters = (input: Character[]): Character[] =>
   input
@@ -99,12 +116,33 @@ export function CharactersPage() {
     setCharacters: setStoreCharacters,
     textModelConfig,
     pollinationsKey,
+    imageEngine,
+    comfyUIUrl,
   } = useAppStore();
 
   const [characters, setCharacters] = useState<Character[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Outline diff dialog
+  const [diffDialogOpen, setDiffDialogOpen] = useState(false);
+  const [outlineDiffs, setOutlineDiffs] = useState<CharacterDiff[]>([]);
+  const [acceptedDiffIds, setAcceptedDiffIds] = useState<Set<string>>(new Set());
+
+  // Navigation blocker when there are unsaved changes
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
+
+  /** Navigate away with unsaved-changes guard */
+  const guardedNavigate = (path: string) => {
+    if (hasChanges) {
+      setPendingNavPath(path);
+      setLeaveDialogOpen(true);
+    } else {
+      navigate(path);
+    }
+  };
 
   const [showAppearanceStyleModal, setShowAppearanceStyleModal] = useState(false);
   const [appearanceTargetId, setAppearanceTargetId] = useState<string | null>(null);
@@ -124,6 +162,7 @@ export function CharactersPage() {
   );
 
   const hasPollinations = pollinationsKey.trim().length > 0;
+  const hasImageEngine = imageEngine === 'comfyui' || hasPollinations;
 
   useEffect(() => {
     if (projectId) {
@@ -144,18 +183,18 @@ export function CharactersPage() {
   }, [projectId, getCharacters, setStoreCharacters]);
 
   const parseCharactersFromOutline = (outline: string): Character[] => {
-    const characterSection = outline.match(/##\s*(主要角色|Main Characters?)\b[\s\S]*?(?=\n##\s|$)/i);
+    const characterSection = outline.match(/##\s*(主要角色|主要人物|角色介绍|人物设定|Main Characters?)[\s\S]*?(?=\n##\s|$)/i);
     if (!characterSection) {
       return [];
     }
 
     const parsed: Character[] = [];
     const blocks = characterSection[0]
-      .split(/\n###\s+/)
+      .split(/\n#{3,4}\s+/)
       .filter(
         (block) =>
           block.trim() &&
-          !/^\s*(主要角色|Main Characters?)\s*$/i.test(block.trim())
+          !/^\s*(主要角色|主要人物|角色介绍|人物设定|Main Characters?)\s*$/i.test(block.trim())
       );
 
     blocks.forEach((block, index) => {
@@ -177,6 +216,7 @@ export function CharactersPage() {
       const character: Character = {
         id: `char-${Date.now()}-${index}`,
         name,
+        gender: '',
         role: '',
         personality: '',
         background: '',
@@ -192,7 +232,9 @@ export function CharactersPage() {
         const valueMatch = line.match(/[：:]\s*(.+)$/);
         const value = valueMatch ? valueMatch[1].replace(/\*\*/g, '').trim() : '';
 
-        if (lowerLine.includes('身份') || lowerLine.includes('role')) {
+        if (lowerLine.includes('性别') || lowerLine.includes('gender')) {
+          character.gender = value;
+        } else if (lowerLine.includes('身份') || lowerLine.includes('role')) {
           character.role = value;
         } else if (lowerLine.includes('性格') || lowerLine.includes('personality')) {
           character.personality = value;
@@ -211,6 +253,42 @@ export function CharactersPage() {
     return normalizeValidCharacters(parsed);
   };
 
+  const detectCharacterDiffs = (
+    storedChars: Character[],
+    outlineChars: Character[]
+  ): CharacterDiff[] => {
+    const FIELD_LABELS: Record<string, string> = {
+      gender: tx(uiLanguage, '性别', 'Gender'),
+      role: tx(uiLanguage, '身份', 'Role'),
+      personality: tx(uiLanguage, '性格', 'Personality'),
+      background: tx(uiLanguage, '背景', 'Background'),
+      motivation: tx(uiLanguage, '动机', 'Motivation'),
+      appearance: tx(uiLanguage, '形象', 'Appearance'),
+    };
+    const diffs: CharacterDiff[] = [];
+    for (const outlineChar of outlineChars) {
+      const stored = storedChars.find(
+        (c) => c.name.trim().toLowerCase() === outlineChar.name.trim().toLowerCase()
+      );
+      if (!stored) {
+        diffs.push({ storedId: null, name: outlineChar.name, isNew: true, fields: [], outlineChar });
+        continue;
+      }
+      const fields: FieldDiff[] = [];
+      for (const field of ['gender', 'role', 'personality', 'background', 'motivation', 'appearance'] as const) {
+        const current = (stored[field] as string) || '';
+        const fromOutline = (outlineChar[field] as string) || '';
+        if (fromOutline && current !== fromOutline) {
+          fields.push({ field, label: FIELD_LABELS[field], current, fromOutline });
+        }
+      }
+      if (fields.length > 0) {
+        diffs.push({ storedId: stored.id, name: stored.name, isNew: false, fields, outlineChar });
+      }
+    }
+    return diffs;
+  };
+
   const loadData = async (pid: string) => {
     try {
       const project = await projectApi.getById(pid);
@@ -222,6 +300,19 @@ export function CharactersPage() {
         setCharacters(normalized);
         if (normalized.length !== storedCharacters.length) {
           setStoreCharacters(pid, normalized);
+        }
+        // Detect diffs between stored characters and what's currently in the outline
+        if (project?.description) {
+          const outlineChars = parseCharactersFromOutline(project.description);
+          if (outlineChars.length > 0) {
+            const diffs = detectCharacterDiffs(normalized, outlineChars);
+            if (diffs.length > 0) {
+              setOutlineDiffs(diffs);
+              // Pre-select all diffs for acceptance
+              setAcceptedDiffIds(new Set(diffs.map((d) => d.storedId ?? d.outlineChar.id)));
+              setDiffDialogOpen(true);
+            }
+          }
         }
       } else if (project?.description) {
         const parsed = parseCharactersFromOutline(project.description);
@@ -314,6 +405,7 @@ export function CharactersPage() {
     const newCharacter: Character = {
       id: `char-${Date.now()}`,
       name: isFirst ? tx(uiLanguage, '主角名', 'Protagonist') : tx(uiLanguage, '新角色', 'New Character'),
+      gender: '',
       role: isFirst ? tx(uiLanguage, '主角', 'Protagonist') : '',
       personality: '',
       background: '',
@@ -338,6 +430,51 @@ export function CharactersPage() {
       console.error('Failed to save characters:', error);
       alert(typeof error === 'string' ? error : tx(uiLanguage, '保存失败', 'Save failed'));
     }
+  };
+
+  // Save silently then proceed with blocked navigation
+  const handleSaveAndProceed = async () => {
+    if (!projectId) { setLeaveDialogOpen(false); if (pendingNavPath) navigate(pendingNavPath); return; }
+    try {
+      await syncCharactersToOutline(characters);
+      setHasChanges(false);
+    } catch (error) {
+      console.error('Failed to save before leaving:', error);
+    } finally {
+      setLeaveDialogOpen(false);
+      if (pendingNavPath) navigate(pendingNavPath);
+    }
+  };
+
+  // Apply accepted outline diffs to local character state (does NOT save)
+  const applyAcceptedDiffs = () => {
+    if (acceptedDiffIds.size === 0) { setDiffDialogOpen(false); return; }
+    setCharacters((prev) => {
+      let updated = [...prev];
+      for (const diff of outlineDiffs) {
+        const diffKey = diff.storedId ?? diff.outlineChar.id;
+        if (!acceptedDiffIds.has(diffKey)) continue;
+        if (diff.isNew) {
+          updated = [
+            ...updated,
+            {
+              ...diff.outlineChar,
+              id: `char-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+            },
+          ];
+        } else {
+          updated = updated.map((char) => {
+            if (char.id !== diff.storedId) return char;
+            const updates: Partial<Character> = {};
+            for (const fd of diff.fields) updates[fd.field] = fd.fromOutline;
+            return { ...char, ...updates };
+          });
+        }
+      }
+      return updated;
+    });
+    setHasChanges(true);
+    setDiffDialogOpen(false);
   };
 
   const openAppearanceStyleDialog = (charId: string) => {
@@ -399,7 +536,7 @@ export function CharactersPage() {
       const portraitPrompt = result.image_prompt;
       let portraitWarning: string | null = null;
 
-      if (hasPollinations) {
+      if (hasImageEngine) {
         try {
           portraitBase64 = await invoke<string>('generate_promo_image', {
             prompt: result.image_prompt,
@@ -407,6 +544,8 @@ export function CharactersPage() {
             height: ONE_INCH_HEIGHT,
             model: 'zimage',
             pollinationsKey: pollinationsKey || null,
+            engine: imageEngine,
+            comfyuiUrl: comfyUIUrl || null,
           });
         } catch (error) {
           const message =
@@ -422,8 +561,8 @@ export function CharactersPage() {
       } else {
         portraitWarning = tx(
           uiLanguage,
-          '未配置 Pollinations API Key，已跳过一寸照生成。',
-          'Pollinations API Key not configured, portrait generation skipped.'
+          '未配置图片生成引擎，已跳过一寸照生成。',
+          'No image engine configured, portrait generation skipped.'
         );
       }
 
@@ -474,8 +613,8 @@ export function CharactersPage() {
       return;
     }
 
-    if (!hasPollinations) {
-      setAppearanceError(tx(uiLanguage, '请先在设置页面配置 Pollinations API Key', 'Configure Pollinations API Key in Settings first'));
+    if (!hasImageEngine) {
+      setAppearanceError(tx(uiLanguage, '请先在设置页面配置图片生成引擎（Pollinations 或 ComfyUI）', 'Configure an image engine (Pollinations or ComfyUI) in Settings first'));
       return;
     }
 
@@ -511,6 +650,8 @@ export function CharactersPage() {
         height: ONE_INCH_HEIGHT,
         model: 'zimage',
         pollinationsKey: pollinationsKey || null,
+        engine: imageEngine,
+        comfyuiUrl: comfyUIUrl || null,
       });
 
       const nextCharacters = characters.map((char) =>
@@ -547,7 +688,7 @@ export function CharactersPage() {
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <Button
           variant="ghost"
-          onClick={() => navigate(`/project/${projectId}`)}
+          onClick={() => guardedNavigate(`/project/${projectId}`)}
           className="whitespace-nowrap self-start"
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
@@ -662,6 +803,21 @@ export function CharactersPage() {
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          {tx(uiLanguage, '性别', 'Gender')}
+                        </label>
+                        <input
+                          type="text"
+                          value={char.gender || ''}
+                          onChange={(event) =>
+                            handleUpdateCharacter(char.id, 'gender', event.target.value)
+                          }
+                          className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+                          placeholder={tx(uiLanguage, '男 / 女 / 其他', 'Male / Female / Other')}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                           {tx(uiLanguage, '性格特点', 'Personality')}
                         </label>
                         <input
@@ -772,6 +928,11 @@ export function CharactersPage() {
                                 }`}
                               >
                                 {char.role}
+                              </span>
+                            )}
+                            {char.gender && (
+                              <span className="inline-block mt-1 ml-1 px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                                {char.gender}
                               </span>
                             )}
                           </div>
@@ -950,6 +1111,174 @@ export function CharactersPage() {
                   : tx(uiLanguage, '重生', 'Regenerate')}
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Outline diff dialog ── */}
+      {diffDialogOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="p-6 pb-3 flex-shrink-0">
+              <div className="flex items-center gap-2 mb-1">
+                <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0" />
+                <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                  {tx(uiLanguage, '检测到大纲角色信息差异', 'Outline Character Differences')}
+                </h2>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                {tx(
+                  uiLanguage,
+                  '大纲中的角色信息与当前设定有差异，勾选要采用大纲更新的角色，操作后仍需手动保存。',
+                  'The outline has character info that differs from current settings. Check which to apply — you must still save manually after.'
+                )}
+              </p>
+              <div className="flex gap-2 mt-3">
+                <button
+                  type="button"
+                  onClick={() => setAcceptedDiffIds(new Set(outlineDiffs.map((d) => d.storedId ?? d.outlineChar.id)))}
+                  className="text-xs px-2 py-1 rounded border border-primary-300 dark:border-primary-600 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+                >
+                  {tx(uiLanguage, '全部选中', 'Select All')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAcceptedDiffIds(new Set())}
+                  className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  {tx(uiLanguage, '全部取消', 'Deselect All')}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 pb-2 space-y-3 min-h-0">
+              {outlineDiffs.map((diff) => {
+                const diffKey = diff.storedId ?? diff.outlineChar.id;
+                const isAccepted = acceptedDiffIds.has(diffKey);
+                return (
+                  <div
+                    key={diffKey}
+                    className={`border rounded-lg p-3 transition-colors ${
+                      isAccepted
+                        ? 'border-primary-300 dark:border-primary-600 bg-primary-50/60 dark:bg-primary-900/10'
+                        : 'border-gray-200 dark:border-gray-700'
+                    }`}
+                  >
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isAccepted}
+                        onChange={(e) =>
+                          setAcceptedDiffIds((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(diffKey);
+                            else next.delete(diffKey);
+                            return next;
+                          })
+                        }
+                        className="w-4 h-4 rounded accent-primary-600"
+                      />
+                      <span className="font-semibold text-gray-900 dark:text-white">{diff.name}</span>
+                      {diff.isNew && (
+                        <span className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-1.5 py-0.5 rounded">
+                          {tx(uiLanguage, '新角色', 'New')}
+                        </span>
+                      )}
+                    </label>
+                    {diff.isNew ? (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-6">
+                        {tx(
+                          uiLanguage,
+                          '此角色存在于大纲中，但尚未添加到角色列表',
+                          'This character exists in the outline but is not yet in the character list'
+                        )}
+                      </p>
+                    ) : (
+                      <div className="mt-2 ml-6 space-y-1.5">
+                        {diff.fields.map((f) => (
+                          <div
+                            key={f.field}
+                            className="grid grid-cols-[72px_1fr_14px_1fr] items-start gap-1 text-xs"
+                          >
+                            <span className="font-medium text-gray-600 dark:text-gray-400">{f.label}：</span>
+                            <span
+                              className="px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-900/20 text-gray-500 dark:text-gray-400 truncate"
+                              title={f.current || tx(uiLanguage, '（空）', '(empty)')}
+                            >
+                              {f.current || tx(uiLanguage, '（空）', '(empty)')}
+                            </span>
+                            <span className="text-gray-400 text-center">→</span>
+                            <span
+                              className="px-1.5 py-0.5 rounded bg-green-50 dark:bg-green-900/20 text-gray-800 dark:text-gray-200 truncate"
+                              title={f.fromOutline}
+                            >
+                              {f.fromOutline}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end gap-3 p-6 pt-4 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+              <Button variant="outline" onClick={() => setDiffDialogOpen(false)}>
+                {tx(uiLanguage, '忽略全部', 'Ignore All')}
+              </Button>
+              <Button onClick={applyAcceptedDiffs}>
+                <Check className="w-4 h-4 mr-1" />
+                {tx(uiLanguage, '采用选中的更新', 'Apply Selected')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Unsaved-changes leave dialog ── */}
+      {leaveDialogOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0" />
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                {tx(uiLanguage, '有未保存的更改', 'Unsaved Changes')}
+              </h3>
+            </div>
+            <p className="text-gray-600 dark:text-gray-400 mb-6">
+              {tx(
+                uiLanguage,
+                '角色信息有未保存的更改，离开前是否保存？',
+                'Character info has unsaved changes. Save before leaving?'
+              )}
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => { setLeaveDialogOpen(false); setPendingNavPath(null); }}
+                className="flex-1"
+              >
+                {tx(uiLanguage, '取消', 'Cancel')}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => { setLeaveDialogOpen(false); if (pendingNavPath) navigate(pendingNavPath); }}
+                className="flex-1 !text-red-600 !border-red-300 hover:!bg-red-50 dark:hover:!bg-red-900/20"
+              >
+                {tx(uiLanguage, '否', 'No')}
+              </Button>
+              <Button onClick={() => void handleSaveAndProceed()} className="flex-1">
+                {tx(uiLanguage, '是', 'Yes')}
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-3 text-center">
+              {tx(
+                uiLanguage,
+                '"是"保存并离开 · "否"直接离开 · "取消"留在此页',
+                '"Yes" save & leave · "No" leave without saving · "Cancel" stay'
+              )}
+            </p>
           </div>
         </div>
       )}

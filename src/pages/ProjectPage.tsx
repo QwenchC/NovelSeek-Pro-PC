@@ -81,7 +81,7 @@ const normalizeCoverImages = (raw: string | null | undefined, coverLabelPrefix =
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey, uiLanguage } = useAppStore();
+  const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey, imageEngine, comfyUIUrl, uiLanguage } = useAppStore();
   const hasValidTextConfig = useMemo(
     () =>
       textModelConfig.apiKey.trim().length > 0 &&
@@ -344,6 +344,8 @@ export function ProjectPage() {
         height: coverConfig.height,
         model: coverConfig.model,
         pollinationsKey: pollinationsKey || null,
+        engine: imageEngine,
+        comfyuiUrl: comfyUIUrl || null,
       });
 
       const newCover: CoverImageItem = {

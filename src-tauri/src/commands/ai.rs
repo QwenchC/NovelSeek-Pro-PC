@@ -376,3 +376,12 @@ pub async fn test_pollinations_connection(api_key: Option<String>) -> Result<boo
     let service = GenerationService::new(None, api_key);
     service.test_pollinations().await.map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn test_comfyui_connection(
+    #[allow(non_snake_case)] comfyuiUrl: Option<String>,
+) -> Result<bool, String> {
+    use crate::api::ComfyUIClient;
+    let client = ComfyUIClient::new(comfyuiUrl);
+    client.test_connection().await.map_err(|e| e.to_string())
+}
