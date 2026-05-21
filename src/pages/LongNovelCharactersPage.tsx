@@ -561,7 +561,7 @@ function RelationshipNetworkTab({
   projectId: string;
   setCharacterRelationships: (rels: CharacterRelationship[]) => void;
 }) {
-  const { textModelConfig, getLongNovelOutline, getPlotArcs } = useAppStore();
+  const { textModelConfig, getLongNovelOutline } = useAppStore();
   const [isGenRels, setIsGenRels] = useState(false);
   const [genRelsText, setGenRelsText] = useState('');
   const [parsedRels, setParsedRels] = useState<CharacterRelationship[] | null>(null);
