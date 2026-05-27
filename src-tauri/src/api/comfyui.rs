@@ -322,6 +322,7 @@ impl ComfyUIClient {
     }
 
     /// Download image bytes from ComfyUI /view endpoint.
+    /// Retries up to 3 times to handle stale keep-alive connections (Windows error 10053).
     async fn download_image(&self, img: &HistoryImage) -> Result<Vec<u8>> {
         let url = format!(
             "{}/view?filename={}&subfolder={}&type={}",
@@ -331,23 +332,37 @@ impl ComfyUIClient {
             urlencoding::encode(&img.image_type),
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| anyhow!("ComfyUI /view request failed: {}", e))?;
+        let max_retries: u32 = 3;
+        let mut last_err = String::new();
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            return Err(anyhow!("ComfyUI /view error ({})", status));
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(800 * u64::from(attempt))).await;
+            }
+
+            let send_result = self.client.get(&url).send().await;
+            let resp = match send_result {
+                Err(e) => {
+                    last_err = e.to_string();
+                    continue;
+                }
+                Ok(r) => r,
+            };
+
+            if !resp.status().is_success() {
+                return Err(anyhow!("ComfyUI /view error ({})", resp.status()));
+            }
+
+            match resp.bytes().await {
+                Err(e) => {
+                    last_err = e.to_string();
+                    continue;
+                }
+                Ok(bytes) => return Ok(bytes.to_vec()),
+            }
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| anyhow!("Failed to read image bytes: {}", e))?;
-        Ok(bytes.to_vec())
+        Err(anyhow!("ComfyUI /view request failed after {} retries: {}", max_retries, last_err))
     }
 
     /// Generate an image and return it as a `data:image/png;base64,...` string.
