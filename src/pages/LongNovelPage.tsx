@@ -5,11 +5,13 @@ import type { PlotArc } from '@store/index';
 import { projectApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
 import { BookSummaryButton } from '@components/BookSummaryButton';
+import { CultivationSystemPanel } from '@components/CultivationSystemPanel';
+import { AiArcGenerateModal } from '@components/AiArcGenerateModal';
 import { useSmartBack } from '@utils/useSmartBack';
 import {
   ArrowLeft, BookOpen, Layers, Users, FileText, Plus, Edit2,
   Trash2, ChevronDown, ChevronUp, Check, Play, Sunset,
-  PenLine, ScrollText, Image, FileDown, ChevronLeft, ChevronRight,
+  PenLine, ScrollText, Image, FileDown, ChevronLeft, ChevronRight, Sparkles,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
 import { formatDate, formatWordCount, confirmDialog } from '@utils/index';
@@ -74,6 +76,7 @@ export function LongNovelPage() {
     currentProject, setCurrentProject,
     chapters, setChapters,
     getPlotArcs, addPlotArc, updatePlotArc, deletePlotArc,
+    cleanupRealmEventsForChapter,
     textModelConfig, pollinationsKey, imageEngine, comfyUIUrl,
   } = useAppStore();
 
@@ -88,6 +91,8 @@ export function LongNovelPage() {
 
   // Cover modal state
   const [showCoverModal, setShowCoverModal] = useState(false);
+  const [showCultivationModal, setShowCultivationModal] = useState(false);
+  const [showAiArcModal, setShowAiArcModal] = useState(false);
   const [coverImages, setCoverImages] = useState<CoverImageItem[]>([]);
   const [coverIndex, setCoverIndex] = useState(0);
   const [defaultCoverId, setDefaultCoverId] = useState<string | null>(null);
@@ -227,6 +232,8 @@ export function LongNovelPage() {
     knowledgeApi
       .handleChapterDeletion(id, chapterId)
       .catch((e) => console.warn('[KB] handleChapterDeletion failed:', e));
+    // Drop any cultivation realm events tied to this chapter (frontend-only state).
+    cleanupRealmEventsForChapter(id, chapterId);
     const updated = await chapterApi.getByProject(id);
     setChapters(updated);
   };
@@ -317,6 +324,15 @@ export function LongNovelPage() {
           </Button>
           <Button
             variant="outline"
+            onClick={() => setShowCultivationModal(true)}
+            className="text-sm"
+            title={tx(uiLanguage, '修炼境界表 + 角色境界追踪', 'Cultivation realms + character realm tracker')}
+          >
+            <Sparkles className="w-4 h-4 mr-1.5 text-amber-500" />
+            {tx(uiLanguage, '境界系统', 'Realms')}
+          </Button>
+          <Button
+            variant="outline"
             onClick={() => setShowCoverModal(true)}
             className="text-sm"
           >
@@ -359,13 +375,23 @@ export function LongNovelPage() {
                 <Layers className="w-4 h-4 text-purple-600" />
                 {tx(uiLanguage, '剧情弧线', 'Plot Arcs')}
               </h2>
-              <button
-                onClick={() => setShowArcModal({ mode: 'create' })}
-                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                {tx(uiLanguage, '添加弧线', 'Add Arc')}
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setShowAiArcModal(true)}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 text-purple-700 dark:text-purple-300 hover:from-purple-100 hover:to-pink-100 dark:hover:from-purple-900/40 dark:hover:to-pink-900/40 transition-colors"
+                  title={tx(uiLanguage, '基于大纲 / 境界系统 AI 自动生成弧线', 'Auto-generate an arc based on outline / realm system')}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  {tx(uiLanguage, 'AI 生成', 'AI Generate')}
+                </button>
+                <button
+                  onClick={() => setShowArcModal({ mode: 'create' })}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  {tx(uiLanguage, '手动添加', 'Add Manually')}
+                </button>
+              </div>
             </div>
 
             {sortedArcs.length === 0 ? (
@@ -486,6 +512,35 @@ export function LongNovelPage() {
           </div>
         </div>
       </div>
+
+      {showCultivationModal && id && (
+        <CultivationSystemPanel
+          projectId={id}
+          chapters={sortedChapters}
+          onClose={() => setShowCultivationModal(false)}
+        />
+      )}
+
+      {showAiArcModal && id && currentProject && (
+        <AiArcGenerateModal
+          projectId={id}
+          projectTitle={currentProject.title}
+          projectDescription={currentProject.description}
+          chapters={sortedChapters}
+          onAccept={(data) => {
+            addPlotArc(id, {
+              title: data.title,
+              summary: data.summary,
+              order: arcs.length,
+              status: 'upcoming',
+              chapterCount: data.chapterCount,
+              miniOutline: data.miniOutline,
+            });
+            setShowAiArcModal(false);
+          }}
+          onClose={() => setShowAiArcModal(false)}
+        />
+      )}
 
       {showArcModal && id && (
         <ArcEditModal
@@ -772,13 +827,14 @@ function ArcEditModal({
   const [title, setTitle] = useState(arc?.title ?? '');
   const [summary, setSummary] = useState(arc?.summary ?? '');
   const [status, setStatus] = useState<PlotArc['status']>(arc?.status ?? 'upcoming');
+  const [miniOutline, setMiniOutline] = useState(arc?.miniOutline ?? '');
 
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
           {mode === 'create'
             ? tx(uiLanguage, '添加剧情弧线', 'Add Plot Arc')
@@ -824,6 +880,20 @@ function ArcEditModal({
               ))}
             </select>
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {tx(uiLanguage, '弧线小纲（可选）', 'Arc Mini-Outline (Optional)')}
+            </label>
+            <textarea
+              value={miniOutline}
+              onChange={(e) => setMiniOutline(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-40 resize-y font-mono text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-purple-500"
+              spellCheck={false}
+              placeholder={tx(uiLanguage,
+                '格式：第1章：标题 — 目标\\n第2章：标题 — 目标\\n…\\n（在编辑器里"构建空白章节"会按此创建。）',
+                'Format: Chapter 1: Title — Goal\\nChapter 2: Title — Goal\\n...\\n("Build chapters" in the editor uses this.)')}
+            />
+          </div>
         </div>
         <div className="flex gap-3 mt-6">
           <Button variant="outline" onClick={onClose} className="flex-1">
@@ -839,6 +909,10 @@ function ArcEditModal({
                 status,
                 chaptersUntilEnd: arc?.chaptersUntilEnd,
                 chapterCount: arc?.chapterCount ?? 0,
+                // Preserve mini-outline + built chapter linkage on edit.
+                // (Previously the manual edit dropped these fields.)
+                miniOutline: miniOutline.trim() || undefined,
+                builtChapterIds: arc?.builtChapterIds,
               });
             }}
             className="flex-1 bg-purple-600 hover:bg-purple-700"

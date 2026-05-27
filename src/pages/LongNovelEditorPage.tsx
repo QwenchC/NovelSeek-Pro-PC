@@ -5,7 +5,9 @@ import type { PlotArc } from '@store/index';
 import { chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
 import { BookSummaryButton } from '@components/BookSummaryButton';
+import { CultivationSystemPanel } from '@components/CultivationSystemPanel';
 import { useSmartBack } from '@utils/useSmartBack';
+import { buildRealmSystemContext } from '@utils/cultivation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -148,6 +150,7 @@ export function LongNovelEditorPage() {
     getPromo, setPromo,
     knowledgeBaseEnabled, embeddingConfig,
     summariesEnabled, entitiesEnabled,
+    getCultivationRealms, getCharacterRealmEvents,
   } = useAppStore();
 
   const hasValidEmbeddingConfig = useMemo(
@@ -214,6 +217,7 @@ export function LongNovelEditorPage() {
   const [promoError, setPromoError] = useState<string | null>(null);
   const [promoStyle, setPromoStyle] = useState('cinematic');
   const [showPromoConfig, setShowPromoConfig] = useState(false);
+  const [showCultivationModal, setShowCultivationModal] = useState(false);
 
   // Illustrations
   const [isIllustrationMode, setIsIllustrationMode] = useState(false);
@@ -450,6 +454,13 @@ export function LongNovelEditorPage() {
     const arcContext = buildArcContext(sortedArcs, uiLanguage);
     const previousSummary = getPreviousChapterSummary(allChapters, chapter);
     const chapterList = buildChapterList(allChapters, chapter.id);
+    const realmContext = buildRealmSystemContext(
+      getCultivationRealms(id),
+      characters,
+      getCharacterRealmEvents(id),
+      allChapters,
+      { uiLanguage }
+    );
 
     const charactersInfo = characters.length > 0
       ? characters.map((c) => {
@@ -465,10 +476,14 @@ export function LongNovelEditorPage() {
         }).join('\n\n')
       : undefined;
 
-    // Combine arc context with world setting
-    const combinedWorldSetting = arcContext
-      ? (worldSetting ? `${arcContext}\n\n${worldSetting}` : arcContext)
-      : worldSetting || undefined;
+    // Combine arc context + realm system + world setting.
+    // Realm context goes BEFORE worldSetting so the LLM treats it as a foundational
+    // power-scaling rule, not a footnote.
+    const worldParts: string[] = [];
+    if (arcContext) worldParts.push(arcContext);
+    if (realmContext) worldParts.push(realmContext);
+    if (worldSetting) worldParts.push(worldSetting);
+    const combinedWorldSetting = worldParts.length > 0 ? worldParts.join('\n\n') : undefined;
 
     // Long-range semantic retrieval (RAG). Runs in parallel with stream setup.
     // Falls through silently on error — legacy "last 3 chapters" context still applies.
@@ -604,7 +619,19 @@ export function LongNovelEditorPage() {
     const nextIndex = allChapters.length > 0
       ? Math.max(...allChapters.map((c) => c.order_index)) + 1
       : 1;
-    const arcContext = buildArcContext(sortedArcs, uiLanguage);
+    const rawArcContext = buildArcContext(sortedArcs, uiLanguage);
+    const realmCtxForFill = id
+      ? buildRealmSystemContext(
+          getCultivationRealms(id),
+          getCharacters(id),
+          getCharacterRealmEvents(id),
+          allChapters,
+          { uiLanguage }
+        )
+      : '';
+    const arcContext = realmCtxForFill
+      ? `${rawArcContext}\n\n${realmCtxForFill}`.trim()
+      : rawArcContext;
 
     const unlisten = await listen<string>('chapter-outline-stream', (e) => {
       if (aiFillCancelRef.current) return;
@@ -658,7 +685,17 @@ export function LongNovelEditorPage() {
     setArcBuiltChapterIds([]);
     if (id && activeArc) updatePlotArc(id, activeArc.id, { miniOutline: '', builtChapterIds: [] });
 
-    const projectOutline = getLongNovelOutline(id);
+    const rawProjectOutline = getLongNovelOutline(id);
+    const realmCtxForArcOutline = buildRealmSystemContext(
+      getCultivationRealms(id),
+      getCharacters(id),
+      getCharacterRealmEvents(id),
+      allChapters,
+      { uiLanguage }
+    );
+    const projectOutline = realmCtxForArcOutline
+      ? `${rawProjectOutline}\n\n${realmCtxForArcOutline}`.trim()
+      : rawProjectOutline;
     const maxExistingOrder = allChapters.length > 0
       ? Math.max(...allChapters.map((c) => c.order_index))
       : 0;
@@ -1032,6 +1069,15 @@ export function LongNovelEditorPage() {
                 )}
                 <Button
                   variant="outline"
+                  onClick={() => setShowCultivationModal(true)}
+                  className="text-sm py-1.5"
+                  title={tx(uiLanguage, '修炼境界表 + 角色境界追踪', 'Cultivation realms + character realm tracker')}
+                >
+                  <Sparkles className="w-4 h-4 mr-1 text-amber-500" />
+                  {tx(uiLanguage, '境界', 'Realms')}
+                </Button>
+                <Button
+                  variant="outline"
                   onClick={handleSave}
                   loading={isSaving}
                   disabled={isSaved}
@@ -1356,10 +1402,39 @@ export function LongNovelEditorPage() {
 
                 {arcMiniOutlineText && !isGenMiniOutline && (
                   <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700 p-2 space-y-2">
-                    <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                      {tx(uiLanguage, '弧线小纲 (已生成)', 'Arc outline (generated)')}
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {tx(uiLanguage, '弧线小纲（可直接编辑，输入即保存）', 'Arc outline (edit inline, auto-saved)')}
+                      </p>
+                      {arcBuiltChapterIds.length > 0 && (
+                        <span className="text-[10px] text-emerald-700 dark:text-emerald-400 flex-shrink-0">
+                          {tx(uiLanguage,
+                            `已构建 ${arcBuiltChapterIds.length} 章`,
+                            `${arcBuiltChapterIds.length} chapters built`)}
+                        </span>
+                      )}
+                    </div>
+                    <textarea
+                      value={arcMiniOutlineText}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setArcMiniOutlineText(v);
+                        arcMiniOutlineTextRef.current = v;
+                        // Auto-persist to zustand. The change survives chapter
+                        // builds because mini_outline and builtChapterIds are
+                        // independent fields on the arc.
+                        if (id && activeArc) {
+                          updatePlotArc(id, activeArc.id, { miniOutline: v });
+                        }
+                      }}
+                      spellCheck={false}
+                      className="w-full min-h-[140px] max-h-72 text-xs leading-relaxed font-mono text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-purple-500 resize-y"
+                    />
+                    <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-snug">
+                      {tx(uiLanguage,
+                        '格式：第N章：标题 — 目标。每行一章，按此格式"构建空白章节"才能识别。已构建的章节不会受小纲编辑影响——改动只影响下次"构建"。',
+                        'Format: "Chapter N: Title — Goal", one per line. Already-built chapters are unaffected by edits — your changes only apply to the next "Build chapters" run.')}
                     </p>
-                    <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">{arcMiniOutlineText}</pre>
                     <div className="flex gap-1.5">
                       <button
                         onClick={handleBuildArcChapters}
@@ -1721,6 +1796,14 @@ export function LongNovelEditorPage() {
           </div>
         </div>
       </div>
+    )}
+
+    {showCultivationModal && id && (
+      <CultivationSystemPanel
+        projectId={id}
+        chapters={allChapters}
+        onClose={() => setShowCultivationModal(false)}
+      />
     )}
     </>
   );

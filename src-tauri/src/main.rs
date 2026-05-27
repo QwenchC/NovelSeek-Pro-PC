@@ -42,6 +42,7 @@ async fn main() {
             commands::ai::generate_prologue,
             commands::ai::generate_revision,
             commands::ai::generate_character_appearance,
+            commands::ai::generate_plot_arc,
             commands::ai::generate_character_portrait_prompt,
             commands::ai::test_deepseek_connection,
             commands::ai::test_text_connection,

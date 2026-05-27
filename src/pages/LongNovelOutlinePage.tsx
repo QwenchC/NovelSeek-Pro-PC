@@ -14,6 +14,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
+import { buildRealmSystemContext } from '@utils/cultivation';
 import { confirmDialog } from '@utils/index';
 
 // ── Section parser ─────────────────────────────────────────────
@@ -385,6 +386,7 @@ export function LongNovelOutlinePage() {
     getTimeline, setTimeline,
     getPlotArcs, setPlotArcs, addPlotArc, updatePlotArc, deletePlotArc,
     getCharacters, setCharacters,
+    getCultivationRealms, getCharacterRealmEvents,
   } = useAppStore();
 
   const [worldSetting, setWorldSettingLocal] = useState('');
@@ -450,7 +452,18 @@ export function LongNovelOutlinePage() {
     setError(null);
     setOutline('');
 
-    const existingContext = buildExistingContext(sortedArcs, worldSetting, timeline, uiLanguage);
+    const rawExistingContext = buildExistingContext(sortedArcs, worldSetting, timeline, uiLanguage);
+    // Outline gen happens before any chapters exist; pass [] so we get realm ladder only.
+    const realmContext = buildRealmSystemContext(
+      getCultivationRealms(id),
+      getCharacters(id),
+      getCharacterRealmEvents(id),
+      [],
+      { uiLanguage, ladderOnly: true }
+    );
+    const existingContext = realmContext
+      ? `${rawExistingContext}\n\n${realmContext}`.trim()
+      : rawExistingContext;
 
     const unlisten = await listen<string>('long-novel-outline-stream', (event) => {
       if (cancelRef.current) return;

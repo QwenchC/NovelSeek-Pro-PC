@@ -13,6 +13,8 @@ import type {
   GenerateCharacterPortraitPromptInput,
   CharacterPortraitPromptResult,
   GenerateImageInput,
+  GeneratePlotArcInput,
+  PlotArcResult,
   SystemFontOption,
   TextModelConfig,
   EmbeddingConfig,
@@ -66,6 +68,8 @@ export const aiApi = {
   generateCharacterPortraitPrompt: (input: GenerateCharacterPortraitPromptInput) =>
     invoke<CharacterPortraitPromptResult>('generate_character_portrait_prompt', { input }),
   generateImage: (input: GenerateImageInput) => invoke<string>('generate_image', { input }),
+  generatePlotArc: (input: GeneratePlotArcInput) =>
+    invoke<PlotArcResult>('generate_plot_arc', { input }),
   testTextConnection: (textConfig: TextModelConfig) =>
     invoke<boolean>('test_text_connection', { textConfig }),
   testDeepSeek: (apiKey: string) => invoke<boolean>('test_deepseek_connection', { apiKey }),

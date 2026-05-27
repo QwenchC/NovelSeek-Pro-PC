@@ -188,6 +188,28 @@ export interface CharacterPortraitPromptResult {
   image_prompt: string;
 }
 
+// ── AI-driven plot arc generation ──────────────────────────────
+
+export interface GeneratePlotArcInput {
+  user_idea: string;
+  book_title: string;
+  book_description?: string;
+  book_outline?: string;
+  existing_arcs_summary?: string;
+  realm_system_context?: string;
+  characters_summary?: string;
+  target_chapter_count?: number;
+  output_language?: 'zh' | 'en';
+  text_config: TextModelConfig;
+}
+
+export interface PlotArcResult {
+  title: string;
+  summary: string;
+  chapter_count: number;
+  mini_outline: string;
+}
+
 export interface ImageGenerationParams {
   prompt: string;
   width?: number;

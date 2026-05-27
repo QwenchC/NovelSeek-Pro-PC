@@ -67,6 +67,24 @@ export interface CharacterEvent {
   description: string;
 }
 
+// ── Cultivation realm system (xuanhuan / xianxia) ──────────────
+
+export interface CultivationRealm {
+  id: string;
+  order: number;          // 0-indexed; lower order = weaker realm
+  name: string;           // e.g. "炼气期一层", "筑基初期"
+  description?: string;   // optional flavor / required conditions
+}
+
+export interface CharacterRealmEvent {
+  id: string;
+  characterId: string;
+  realmId: string;
+  chapterId: string;          // FK-style ref into the chapters table
+  chapterOrderIndex: number;  // cached for sort & display so we don't need a join
+  note?: string;
+}
+
 function normalizeCharacterRecord(character: Partial<Character>, index = 0): Character {
   return {
     id: character.id || `char-${Date.now()}-${index}`,
@@ -374,6 +392,19 @@ interface AppState {
   getCharacterEvents: (projectId: string) => CharacterEvent[];
   addCharacterEvent: (projectId: string, event: Omit<CharacterEvent, 'id'>) => void;
   deleteCharacterEvent: (projectId: string, eventId: string) => void;
+
+  // Cultivation realm system
+  cultivationRealmsByProject: Record<string, CultivationRealm[]>;
+  setCultivationRealms: (projectId: string, realms: CultivationRealm[]) => void;
+  getCultivationRealms: (projectId: string) => CultivationRealm[];
+
+  characterRealmEventsByProject: Record<string, CharacterRealmEvent[]>;
+  setCharacterRealmEvents: (projectId: string, events: CharacterRealmEvent[]) => void;
+  getCharacterRealmEvents: (projectId: string) => CharacterRealmEvent[];
+  addCharacterRealmEvent: (projectId: string, event: Omit<CharacterRealmEvent, 'id'>) => void;
+  deleteCharacterRealmEvent: (projectId: string, eventId: string) => void;
+  /** Remove all realm events tied to a deleted chapter. Idempotent. */
+  cleanupRealmEventsForChapter: (projectId: string, chapterId: string) => void;
 
   // Local knowledge base (RAG)
   knowledgeBaseEnabled: boolean;
@@ -736,6 +767,63 @@ export const useAppStore = create<AppState>()(
           },
         })),
 
+      // ── Cultivation realm system ──────────────────────────────
+      cultivationRealmsByProject: {},
+      setCultivationRealms: (projectId, realms) =>
+        set((state) => ({
+          cultivationRealmsByProject: {
+            ...state.cultivationRealmsByProject,
+            [projectId]: [...realms].sort((a, b) => a.order - b.order),
+          },
+        })),
+      getCultivationRealms: (projectId) => {
+        const list = get().cultivationRealmsByProject[projectId] || [];
+        return [...list].sort((a, b) => a.order - b.order);
+      },
+
+      characterRealmEventsByProject: {},
+      setCharacterRealmEvents: (projectId, events) =>
+        set((state) => ({
+          characterRealmEventsByProject: {
+            ...state.characterRealmEventsByProject,
+            [projectId]: events,
+          },
+        })),
+      getCharacterRealmEvents: (projectId) =>
+        get().characterRealmEventsByProject[projectId] || [],
+      addCharacterRealmEvent: (projectId, event) =>
+        set((state) => ({
+          characterRealmEventsByProject: {
+            ...state.characterRealmEventsByProject,
+            [projectId]: [
+              ...(state.characterRealmEventsByProject[projectId] || []),
+              { ...event, id: `realmevt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` },
+            ],
+          },
+        })),
+      deleteCharacterRealmEvent: (projectId, eventId) =>
+        set((state) => ({
+          characterRealmEventsByProject: {
+            ...state.characterRealmEventsByProject,
+            [projectId]: (state.characterRealmEventsByProject[projectId] || []).filter(
+              (e) => e.id !== eventId
+            ),
+          },
+        })),
+      cleanupRealmEventsForChapter: (projectId, chapterId) =>
+        set((state) => {
+          const existing = state.characterRealmEventsByProject[projectId];
+          if (!existing) return state;
+          const filtered = existing.filter((e) => e.chapterId !== chapterId);
+          if (filtered.length === existing.length) return state;
+          return {
+            characterRealmEventsByProject: {
+              ...state.characterRealmEventsByProject,
+              [projectId]: filtered,
+            },
+          };
+        }),
+
       // ── Knowledge base ────────────────────────────────────────
       knowledgeBaseEnabled: false,
       embeddingConfig: { ...DEFAULT_EMBEDDING_CONFIG },
@@ -768,7 +856,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'novelseek-storage',
-      version: 9,
+      version: 10,
       partialize: (state) => ({
         textModelConfig: state.textModelConfig,
         textModelProfiles: state.textModelProfiles,
@@ -788,6 +876,8 @@ export const useAppStore = create<AppState>()(
         longNovelOutlineByProject: state.longNovelOutlineByProject,
         characterRelationshipsByProject: state.characterRelationshipsByProject,
         characterEventsByProject: state.characterEventsByProject,
+        cultivationRealmsByProject: state.cultivationRealmsByProject,
+        characterRealmEventsByProject: state.characterRealmEventsByProject,
         knowledgeBaseEnabled: state.knowledgeBaseEnabled,
         embeddingConfig: state.embeddingConfig,
         summariesEnabled: state.summariesEnabled,
@@ -919,6 +1009,15 @@ export const useAppStore = create<AppState>()(
           }
           if (typeof persistedState.entitiesEnabled !== 'boolean') {
             persistedState.entitiesEnabled = false;
+          }
+        }
+
+        if (version < 10) {
+          if (!persistedState.cultivationRealmsByProject) {
+            persistedState.cultivationRealmsByProject = {};
+          }
+          if (!persistedState.characterRealmEventsByProject) {
+            persistedState.characterRealmEventsByProject = {};
           }
         }
 

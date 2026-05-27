@@ -377,6 +377,220 @@ pub async fn test_pollinations_connection(api_key: Option<String>) -> Result<boo
     service.test_pollinations().await.map_err(|e| e.to_string())
 }
 
+// ── AI-driven plot arc generation ──────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GeneratePlotArcInput {
+    pub user_idea: String,
+    pub book_title: String,
+    #[serde(default)]
+    pub book_description: String,
+    #[serde(default)]
+    pub book_outline: String,
+    #[serde(default)]
+    pub existing_arcs_summary: String,
+    #[serde(default)]
+    pub realm_system_context: String,
+    #[serde(default)]
+    pub characters_summary: String,
+    #[serde(default)]
+    pub target_chapter_count: Option<u32>,
+    #[serde(default = "default_output_lang")]
+    pub output_language: String,
+    pub text_config: TextModelConfigInput,
+}
+
+fn default_output_lang() -> String {
+    "zh".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlotArcResult {
+    pub title: String,
+    pub summary: String,
+    pub chapter_count: u32,
+    pub mini_outline: String,
+}
+
+#[tauri::command]
+pub async fn generate_plot_arc(input: GeneratePlotArcInput) -> Result<PlotArcResult, String> {
+    input.text_config.validate()?;
+    let client = Client::new();
+    let api_url = input.text_config.chat_completions_url();
+    let temperature = input.text_config.normalized_temperature(0.7);
+
+    let chapter_target = input.target_chapter_count.unwrap_or(8).clamp(3, 30);
+    let is_zh = input.output_language.as_str() != "en";
+
+    let prompt = if is_zh {
+        format!(
+            r#"你是一位资深玄幻小说编辑。请基于以下材料，为本书生成一段新的"剧情弧线"。
+
+【书名】{book_title}
+【立意 / 简介】{book_desc}
+
+【小说大纲（已写部分）】
+{book_outline}
+
+【已有的剧情弧线】
+{existing_arcs}
+
+【修炼境界系统 / 已知角色当前状态】
+{realm_ctx}
+
+【已知主要角色】
+{chars}
+
+【用户期望】
+{user_idea}
+
+请生成一段新弧线（约 {n} 章），严格按以下 JSON 结构输出，**不要包裹在 ```json``` 里、不要任何前后文字**：
+{{
+  "title": "弧线标题（10-20 字内，吸引人）",
+  "summary": "弧线整体梗概（150-300 字，说明本弧线的核心矛盾、关键转折、与已有大纲的呼应、与境界系统的关联）",
+  "chapter_count": {n},
+  "mini_outline": "逐章细纲。**严格使用此格式，每章一行**：\n第1章：章节标题 — 本章目标 / 关键事件\n第2章：章节标题 — 本章目标 / 关键事件\n……（共 {n} 章）"
+}}
+
+要求：
+- 严格契合已有的大纲与境界系统（角色境界提升要符合境界阶梯的进阶节奏）
+- 不要重复已有弧线的核心冲突
+- mini_outline 的格式不能改，必须用"第X章：标题 — 目标"，否则无法解析"#,
+            book_title = input.book_title.trim(),
+            book_desc = if input.book_description.trim().is_empty() {
+                "（暂无）"
+            } else {
+                input.book_description.trim()
+            },
+            book_outline = if input.book_outline.trim().is_empty() {
+                "（暂无大纲）"
+            } else {
+                input.book_outline.trim()
+            },
+            existing_arcs = if input.existing_arcs_summary.trim().is_empty() {
+                "（暂无）"
+            } else {
+                input.existing_arcs_summary.trim()
+            },
+            realm_ctx = if input.realm_system_context.trim().is_empty() {
+                "（未定义境界系统）"
+            } else {
+                input.realm_system_context.trim()
+            },
+            chars = if input.characters_summary.trim().is_empty() {
+                "（暂无）"
+            } else {
+                input.characters_summary.trim()
+            },
+            user_idea = input.user_idea.trim(),
+            n = chapter_target,
+        )
+    } else {
+        format!(
+            r#"You are a senior xianxia/xuanhuan editor. Generate a new plot arc for this novel based on the material below.
+
+[Book title] {book_title}
+[Premise] {book_desc}
+
+[Existing outline] {book_outline}
+
+[Existing arcs] {existing_arcs}
+
+[Realm system / character current state] {realm_ctx}
+
+[Main characters] {chars}
+
+[User intent] {user_idea}
+
+Produce one new arc (~{n} chapters). Output STRICT JSON only, no code fences, no surrounding prose:
+{{
+  "title": "Arc title (concise)",
+  "summary": "Arc overview (150-300 chars covering core conflict, key turns, ties to existing outline, ties to realm system)",
+  "chapter_count": {n},
+  "mini_outline": "Per-chapter beats, ONE LINE PER CHAPTER, strict format: 'Chapter 1: Title — Goal / Key event' ... ({n} chapters total)"
+}}
+
+Rules:
+- Stay consistent with existing outline & realm progression pacing
+- Do not repeat existing arcs' core conflicts
+- mini_outline format MUST be 'Chapter N: Title — Goal' or it will not parse"#,
+            book_title = input.book_title.trim(),
+            book_desc = if input.book_description.trim().is_empty() { "(none)" } else { input.book_description.trim() },
+            book_outline = if input.book_outline.trim().is_empty() { "(none)" } else { input.book_outline.trim() },
+            existing_arcs = if input.existing_arcs_summary.trim().is_empty() { "(none)" } else { input.existing_arcs_summary.trim() },
+            realm_ctx = if input.realm_system_context.trim().is_empty() { "(none)" } else { input.realm_system_context.trim() },
+            chars = if input.characters_summary.trim().is_empty() { "(none)" } else { input.characters_summary.trim() },
+            user_idea = input.user_idea.trim(),
+            n = chapter_target,
+        )
+    };
+
+    let request_body = serde_json::json!({
+        "model": input.text_config.model,
+        "messages": [
+            { "role": "system", "content": "You are a senior xianxia editor. Return JSON only — no markdown fences, no commentary." },
+            { "role": "user", "content": prompt }
+        ],
+        "temperature": temperature,
+        "max_tokens": 3000
+    });
+
+    let response = client
+        .post(&api_url)
+        .header("Authorization", format!("Bearer {}", input.text_config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("API 错误: {}", error_text));
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let content = response_json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("无法获取 AI 响应内容")?;
+
+    let cleaned = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let parsed: serde_json::Value = serde_json::from_str(cleaned)
+        .map_err(|e| format!("解析 AI 返回 JSON 失败: {}。原始内容: {}", e, cleaned))?;
+
+    let title = parsed["title"].as_str().unwrap_or("").trim().to_string();
+    let summary = parsed["summary"].as_str().unwrap_or("").trim().to_string();
+    let mini_outline = parsed["mini_outline"].as_str().unwrap_or("").trim().to_string();
+    let chapter_count = parsed["chapter_count"]
+        .as_u64()
+        .map(|v| v as u32)
+        .unwrap_or(chapter_target);
+
+    if title.is_empty() || summary.is_empty() {
+        return Err(format!(
+            "AI 返回缺少必填字段。原始 JSON: {}",
+            cleaned
+        ));
+    }
+
+    Ok(PlotArcResult {
+        title,
+        summary,
+        chapter_count,
+        mini_outline,
+    })
+}
+
 #[tauri::command]
 pub async fn test_comfyui_connection(
     #[allow(non_snake_case)] comfyuiUrl: Option<String>,

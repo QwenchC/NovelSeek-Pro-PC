@@ -12,7 +12,8 @@ export function LongNovelsHomePage() {
   const navigate = useNavigate();
   const { projects, setProjects, uiLanguage, novelTypeByProject, setNovelType, plotArcsByProject } =
     useAppStore();
-  const [loading, setLoading] = useState(true);
+  // Render instantly if zustand has cached projects from a previous mount in this session.
+  const [loading, setLoading] = useState(projects.length === 0);
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   const longProjects = projects.filter((p) => novelTypeByProject[p.id] === 'long');
@@ -23,19 +24,24 @@ export function LongNovelsHomePage() {
 
   const loadProjects = async () => {
     try {
+      // Step 1: fast initial load — render as soon as this returns.
       const data = await projectApi.getAll();
       setProjects(data);
+      setLoading(false);
+
+      // Step 2: defensive word-count recalc in the background, in parallel.
       const { invoke } = await import('@tauri-apps/api/tauri');
-      for (const project of data) {
-        try {
-          await invoke('recalculate_project_word_count', { projectId: project.id });
-        } catch {}
-      }
+      await Promise.all(
+        data.map((project) =>
+          invoke('recalculate_project_word_count', { projectId: project.id }).catch(() => {})
+        )
+      );
+
+      // Step 3: silent refresh with the corrected counts.
       const updatedData = await projectApi.getAll();
       setProjects(updatedData);
     } catch (error) {
       console.error('Failed to load projects:', error);
-    } finally {
       setLoading(false);
     }
   };

@@ -11,6 +11,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
+import { buildRealmSystemContext } from '@utils/cultivation';
 // ── AI output parsers ─────────────────────────────────────────────
 function parseCharactersFromAI(text: string): Omit<Character, 'id'>[] {
   const result: Omit<Character, 'id'>[] = [];
@@ -245,7 +246,10 @@ function CharactersTab({
   projectId: string;
   onImportChars: (chars: Omit<Character, 'id'>[]) => void;
 }) {
-  const { getLongNovelOutline, textModelConfig } = useAppStore();
+  const {
+    getLongNovelOutline, textModelConfig,
+    getCultivationRealms, getCharacterRealmEvents,
+  } = useAppStore();
   const outline = getLongNovelOutline(projectId);
   const [isGenChars, setIsGenChars] = useState(false);
   const [genCharsText, setGenCharsText] = useState('');
@@ -270,9 +274,19 @@ function CharactersTab({
       genCharsTextRef.current += e.payload;
       setGenCharsText(genCharsTextRef.current);
     });
+    // Inject realm ladder into the outline blob so the generated characters
+    // are scoped to this power system (when one is defined).
+    const realmBlock = buildRealmSystemContext(
+      getCultivationRealms(projectId),
+      [],
+      getCharacterRealmEvents(projectId),
+      [],
+      { uiLanguage, ladderOnly: true }
+    );
+    const outlineWithRealms = realmBlock ? `${outline}\n\n${realmBlock}` : outline;
     try {
       await invoke('generate_characters_from_outline_stream', {
-        outline,
+        outline: outlineWithRealms,
         outputLanguage: uiLanguage,
         textConfig: textModelConfig,
       });
