@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useAppStore, Character } from '@store/index';
 import { projectApi, chapterApi } from '@services/api';
 import { Button } from '@components/Button';
@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 import { alertDialog } from '@utils/index';
 
 interface OutlineLine {
@@ -74,7 +75,7 @@ const sanitizeOutline = (raw: string): string => {
 
 export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const smartBack = useSmartBack(id ? `/project/${id}` : '/');
   const { 
     currentProject, setCurrentProject, textModelConfig, uiLanguage,
     getCharacters, setCharacters,
@@ -757,7 +758,7 @@ export function OutlinePage() {
       {/* 顶部工具栏 */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 pb-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 min-w-0">
-          <Button variant="ghost" onClick={() => navigate(`/project/${id}`)} className="whitespace-nowrap self-start">
+          <Button variant="ghost" onClick={smartBack} className="whitespace-nowrap self-start">
             <ArrowLeft className="w-4 h-4 mr-2" />
             {tx(uiLanguage, '返回', 'Back')}
           </Button>

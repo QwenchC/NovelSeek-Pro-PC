@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type {
   Chapter,
+  EmbeddingConfig,
   ImageEngine,
   Project,
   ProjectFolder,
@@ -98,6 +99,13 @@ const TEXT_MODEL_PROVIDERS: TextModelProvider[] = [
 ];
 
 const DEFAULT_ACTIVE_PROFILE_ID = 'deepseek';
+
+const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
+  apiKey: '',
+  apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  model: 'text-embedding-v3',
+  dimensions: 1024,
+};
 
 const BUILTIN_TEXT_MODEL_PROFILES: TextModelProfile[] = [
   {
@@ -366,6 +374,19 @@ interface AppState {
   getCharacterEvents: (projectId: string) => CharacterEvent[];
   addCharacterEvent: (projectId: string, event: Omit<CharacterEvent, 'id'>) => void;
   deleteCharacterEvent: (projectId: string, eventId: string) => void;
+
+  // Local knowledge base (RAG)
+  knowledgeBaseEnabled: boolean;
+  embeddingConfig: EmbeddingConfig;
+  setKnowledgeBaseEnabled: (enabled: boolean) => void;
+  setEmbeddingConfig: (config: EmbeddingConfig) => void;
+  updateEmbeddingConfig: (patch: Partial<EmbeddingConfig>) => void;
+
+  // KB v2 toggles
+  summariesEnabled: boolean;
+  entitiesEnabled: boolean;
+  setSummariesEnabled: (enabled: boolean) => void;
+  setEntitiesEnabled: (enabled: boolean) => void;
 }
 
 const initialProfiles = cloneBuiltinProfiles();
@@ -714,10 +735,40 @@ export const useAppStore = create<AppState>()(
             ),
           },
         })),
+
+      // ── Knowledge base ────────────────────────────────────────
+      knowledgeBaseEnabled: false,
+      embeddingConfig: { ...DEFAULT_EMBEDDING_CONFIG },
+      setKnowledgeBaseEnabled: (enabled) => set({ knowledgeBaseEnabled: enabled }),
+      setEmbeddingConfig: (config) =>
+        set({
+          embeddingConfig: {
+            apiKey: (config.apiKey || '').trim(),
+            apiUrl: (config.apiUrl || DEFAULT_EMBEDDING_CONFIG.apiUrl).trim(),
+            model: (config.model || DEFAULT_EMBEDDING_CONFIG.model).trim(),
+            dimensions:
+              typeof config.dimensions === 'number' && config.dimensions > 0
+                ? config.dimensions
+                : undefined,
+          },
+        }),
+      updateEmbeddingConfig: (patch) =>
+        set((state) => ({
+          embeddingConfig: {
+            ...state.embeddingConfig,
+            ...patch,
+          },
+        })),
+
+      // KB v2 toggles
+      summariesEnabled: false,
+      entitiesEnabled: false,
+      setSummariesEnabled: (enabled) => set({ summariesEnabled: enabled }),
+      setEntitiesEnabled: (enabled) => set({ entitiesEnabled: enabled }),
     }),
     {
       name: 'novelseek-storage',
-      version: 7,
+      version: 9,
       partialize: (state) => ({
         textModelConfig: state.textModelConfig,
         textModelProfiles: state.textModelProfiles,
@@ -737,6 +788,10 @@ export const useAppStore = create<AppState>()(
         longNovelOutlineByProject: state.longNovelOutlineByProject,
         characterRelationshipsByProject: state.characterRelationshipsByProject,
         characterEventsByProject: state.characterEventsByProject,
+        knowledgeBaseEnabled: state.knowledgeBaseEnabled,
+        embeddingConfig: state.embeddingConfig,
+        summariesEnabled: state.summariesEnabled,
+        entitiesEnabled: state.entitiesEnabled,
       }),
       migrate: (persistedState: any, version) => {
         if (!persistedState || typeof persistedState !== 'object') {
@@ -837,6 +892,34 @@ export const useAppStore = create<AppState>()(
           if (!persistedState.longNovelOutlineByProject) persistedState.longNovelOutlineByProject = {};
           if (!persistedState.characterRelationshipsByProject) persistedState.characterRelationshipsByProject = {};
           if (!persistedState.characterEventsByProject) persistedState.characterEventsByProject = {};
+        }
+
+        if (version < 8) {
+          if (typeof persistedState.knowledgeBaseEnabled !== 'boolean') {
+            persistedState.knowledgeBaseEnabled = false;
+          }
+          if (!persistedState.embeddingConfig || typeof persistedState.embeddingConfig !== 'object') {
+            persistedState.embeddingConfig = { ...DEFAULT_EMBEDDING_CONFIG };
+          } else {
+            persistedState.embeddingConfig = {
+              apiKey: persistedState.embeddingConfig.apiKey || '',
+              apiUrl: persistedState.embeddingConfig.apiUrl || DEFAULT_EMBEDDING_CONFIG.apiUrl,
+              model: persistedState.embeddingConfig.model || DEFAULT_EMBEDDING_CONFIG.model,
+              dimensions:
+                typeof persistedState.embeddingConfig.dimensions === 'number'
+                  ? persistedState.embeddingConfig.dimensions
+                  : DEFAULT_EMBEDDING_CONFIG.dimensions,
+            };
+          }
+        }
+
+        if (version < 9) {
+          if (typeof persistedState.summariesEnabled !== 'boolean') {
+            persistedState.summariesEnabled = false;
+          }
+          if (typeof persistedState.entitiesEnabled !== 'boolean') {
+            persistedState.entitiesEnabled = false;
+          }
         }
 
         return persistedState;

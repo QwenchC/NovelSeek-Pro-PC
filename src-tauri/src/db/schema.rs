@@ -227,6 +227,150 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await?;
 
+    // Knowledge base: text chunks with embeddings (BLOB-based, in-memory cosine retrieval)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS kb_chunks (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            embedding_dim INTEGER NOT NULL,
+            embedding_model TEXT NOT NULL,
+            token_count INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        "#
+    )
+    .execute(pool)
+    .await?;
+
+    // Index state: tracks which sources were already embedded (by content hash) so we can skip re-embedding
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS kb_index_state (
+            project_id TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            embedding_model TEXT NOT NULL,
+            indexed_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, source_type, source_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        "#
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_chunks_project ON kb_chunks(project_id);")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_kb_chunks_source ON kb_chunks(project_id, source_type, source_id);"
+    )
+        .execute(pool)
+        .await?;
+
+    // ── v2.0: hierarchical summaries (chapter / arc / book) ────
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS kb_summaries (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL DEFAULT '',
+            summary_text TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            is_stale INTEGER NOT NULL DEFAULT 0,
+            embedding BLOB,
+            embedding_dim INTEGER,
+            embedding_model TEXT,
+            word_count INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        "#
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_summaries_scope ON kb_summaries(project_id, scope_type, scope_id);"
+    )
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_summaries_project ON kb_summaries(project_id);")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_summaries_stale ON kb_summaries(project_id, is_stale);")
+        .execute(pool)
+        .await?;
+
+    // ── v2.1: extracted entities (characters / foreshadowing / locations / events) ──
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS kb_entities (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            canonical_name TEXT NOT NULL,
+            aliases TEXT,
+            summary TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            first_seen_chapter_id TEXT,
+            last_seen_chapter_id TEXT,
+            embedding BLOB,
+            embedding_dim INTEGER,
+            embedding_model TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+        "#
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_entities_project ON kb_entities(project_id);")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_entities_type ON kb_entities(project_id, entity_type);")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_entities_status ON kb_entities(project_id, status);")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS kb_entity_appearances (
+            id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            chapter_id TEXT NOT NULL,
+            excerpt TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (entity_id) REFERENCES kb_entities(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        )
+        "#
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_appearances_entity ON kb_entity_appearances(entity_id);")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_appearances_chapter ON kb_entity_appearances(chapter_id);")
+        .execute(pool)
+        .await?;
+
     log::info!("Database migrations completed");
     Ok(())
 }

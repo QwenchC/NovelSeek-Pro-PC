@@ -205,3 +205,141 @@ export interface GenerateImageInput {
 }
 
 export type ImageEngine = 'pollinations' | 'comfyui';
+
+// ── Local knowledge base (RAG) ─────────────────────────────────
+
+export interface EmbeddingConfig {
+  apiKey: string;
+  apiUrl: string;
+  model: string;
+  dimensions?: number;
+}
+
+export interface KbIndexResult {
+  chunksIndexed: number;
+  skipped: boolean;
+}
+
+export interface KbStats {
+  totalChunks: number;
+  totalSources: number;
+  embeddingModels: string[];
+}
+
+export interface KbIndexChapterInput {
+  projectId: string;
+  chapterId: string;
+  text: string;
+  embeddingConfig: EmbeddingConfig;
+}
+
+export interface KbRetrieveContextInput {
+  projectId: string;
+  query: string;
+  topK?: number;
+  excludeChapterIds: string[];
+  embeddingConfig: EmbeddingConfig;
+  // v2 augmentation layers (all optional, default false on backend)
+  includeSummaries?: boolean;
+  activeArcId?: string;
+  includeForeshadowing?: boolean;
+  // v2.3 performance bound — defaults to 300 on backend
+  maxRecentChapters?: number;
+}
+
+export interface KbForgetSourceInput {
+  projectId: string;
+  sourceType: string;
+  sourceId: string;
+}
+
+// ── v2.0 Summaries ─────────────────────────────────────────────
+
+export type SummaryScopeType = 'chapter' | 'arc' | 'book';
+
+export interface SummaryPayload {
+  id: string;
+  scopeType: SummaryScopeType;
+  scopeId: string;
+  summaryText: string;
+  isStale: boolean;
+  wordCount: number;
+}
+
+export interface KbGenChapterSummaryInput {
+  projectId: string;
+  chapterId: string;
+  chapterTitle: string;
+  chapterText: string;
+  textConfig: TextModelConfig;
+  embeddingConfig: EmbeddingConfig;
+}
+
+export interface KbGenArcSummaryInput {
+  projectId: string;
+  arcId: string;
+  arcTitle: string;
+  arcDescription?: string;
+  chapterIds: string[];
+  textConfig: TextModelConfig;
+  embeddingConfig: EmbeddingConfig;
+}
+
+export interface KbGenBookSummaryInput {
+  projectId: string;
+  bookTitle: string;
+  bookDescription?: string;
+  textConfig: TextModelConfig;
+  embeddingConfig: EmbeddingConfig;
+}
+
+export interface KbForgetSummaryInput {
+  projectId: string;
+  scopeType: SummaryScopeType;
+  scopeId: string;
+}
+
+// ── v2.1 Entities ──────────────────────────────────────────────
+
+export type EntityType = 'character_ref' | 'foreshadowing' | 'location' | 'event' | 'item';
+export type EntityStatus = 'open' | 'paid_off' | 'archived';
+
+export interface EntityPayload {
+  id: string;
+  entityType: EntityType;
+  canonicalName: string;
+  aliases: string[];
+  summary: string;
+  status: EntityStatus;
+  firstSeenChapterId: string | null;
+  lastSeenChapterId: string | null;
+}
+
+export interface KbExtractEntitiesInput {
+  projectId: string;
+  chapterId: string;
+  chapterTitle: string;
+  chapterText: string;
+  knownCharacterNames?: string[];
+  textConfig: TextModelConfig;
+  embeddingConfig: EmbeddingConfig;
+}
+
+export interface KbExtractStatsPayload {
+  charactersAdded: number;
+  charactersUpdated: number;
+  foreshadowingAdded: number;
+  foreshadowingUpdated: number;
+  locationsAdded: number;
+  locationsUpdated: number;
+  eventsAdded: number;
+  eventsUpdated: number;
+  itemsAdded: number;
+  itemsUpdated: number;
+}
+
+export interface KbListEntitiesInput {
+  projectId: string;
+  entityType?: EntityType;
+  status?: EntityStatus;
+}

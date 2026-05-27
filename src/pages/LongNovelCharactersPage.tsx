@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import type { Character, CharacterRelationship, CharacterEvent, PlotArc } from '@store/index';
 import { Button } from '@components/Button';
@@ -10,6 +10,7 @@ import {
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 // ── AI output parsers ─────────────────────────────────────────────
 function parseCharactersFromAI(text: string): Omit<Character, 'id'>[] {
   const result: Omit<Character, 'id'>[] = [];
@@ -95,7 +96,7 @@ function relColor(type: string) {
 
 export function LongNovelCharactersPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const smartBack = useSmartBack(id ? `/long-novel/${id}` : '/long-novels');
   const {
     uiLanguage,
     getCharacters, setCharacters,
@@ -127,7 +128,7 @@ export function LongNovelCharactersPage() {
       {/* Header */}
       <div className="flex items-center gap-3">
         <button
-          onClick={() => navigate(`/long-novel/${id}`)}
+          onClick={smartBack}
           className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
         >
           <ArrowLeft className="w-5 h-5" />

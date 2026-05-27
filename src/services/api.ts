@@ -15,6 +15,21 @@ import type {
   GenerateImageInput,
   SystemFontOption,
   TextModelConfig,
+  EmbeddingConfig,
+  KbIndexResult,
+  KbStats,
+  KbIndexChapterInput,
+  KbRetrieveContextInput,
+  KbForgetSourceInput,
+  SummaryPayload,
+  KbGenChapterSummaryInput,
+  KbGenArcSummaryInput,
+  KbGenBookSummaryInput,
+  KbForgetSummaryInput,
+  EntityPayload,
+  KbExtractEntitiesInput,
+  KbExtractStatsPayload,
+  KbListEntitiesInput,
 } from '@typings/index';
 
 // Project API
@@ -63,4 +78,43 @@ export const systemApi = {
   listSystemFonts: () => invoke<SystemFontOption[]>('list_system_fonts'),
   getSystemFontBase64: (fileName: string) =>
     invoke<string>('get_system_font_base64', { fileName }),
+};
+
+// Knowledge base (local RAG) API
+export const knowledgeApi = {
+  // v1: chunks + retrieval
+  indexChapter: (input: KbIndexChapterInput) =>
+    invoke<KbIndexResult>('kb_index_chapter', { input }),
+  retrieveContext: (input: KbRetrieveContextInput) =>
+    invoke<string>('kb_retrieve_context', { input }),
+  forgetSource: (input: KbForgetSourceInput) =>
+    invoke<void>('kb_forget_source', { input }),
+  testEmbedding: (embeddingConfig: EmbeddingConfig) =>
+    invoke<boolean>('kb_test_embedding', { embeddingConfig }),
+  getStats: (projectId: string) =>
+    invoke<KbStats>('kb_get_stats', { projectId }),
+
+  // v2.0: summaries
+  generateChapterSummary: (input: KbGenChapterSummaryInput) =>
+    invoke<SummaryPayload>('kb_generate_chapter_summary', { input }),
+  generateArcSummary: (input: KbGenArcSummaryInput) =>
+    invoke<SummaryPayload>('kb_generate_arc_summary', { input }),
+  generateBookSummary: (input: KbGenBookSummaryInput) =>
+    invoke<SummaryPayload>('kb_generate_book_summary', { input }),
+  listSummaries: (projectId: string) =>
+    invoke<SummaryPayload[]>('kb_list_summaries', { projectId }),
+  markRollupsStale: (projectId: string) =>
+    invoke<void>('kb_mark_rollups_stale', { projectId }),
+  forgetSummary: (input: KbForgetSummaryInput) =>
+    invoke<void>('kb_forget_summary', { input }),
+
+  // v2.1: entities
+  extractEntities: (input: KbExtractEntitiesInput) =>
+    invoke<KbExtractStatsPayload>('kb_extract_entities', { input }),
+  listEntities: (input: KbListEntitiesInput) =>
+    invoke<EntityPayload[]>('kb_list_entities', { input }),
+  setEntityStatus: (entityId: string, status: string) =>
+    invoke<void>('kb_set_entity_status', { input: { entityId, status } }),
+  handleChapterDeletion: (projectId: string, chapterId: string) =>
+    invoke<void>('kb_handle_chapter_deletion', { input: { projectId, chapterId } }),
 };

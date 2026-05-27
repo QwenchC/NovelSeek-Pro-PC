@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import { chapterApi, projectApi } from '@services/api';
+import { chapterApi, projectApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
 import { ArrowLeft, Save, Sparkles, StopCircle, Check, FileText, ChevronRight, RefreshCw, Image, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import type { Chapter } from '@typings/index';
 import { confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 
 // 单次生成的目标字数（控制在2500字左右避免中断）
 const TARGET_WORDS_PER_GENERATION = 2500;
@@ -53,6 +54,7 @@ function stripMarkdown(text: string): string {
 export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
+  const smartBack = useSmartBack(projectId ? `/project/${projectId}` : '/');
   const [searchParams] = useSearchParams();
   const {
     textModelConfig,
@@ -65,6 +67,10 @@ export function EditorPage() {
     getPromo,
     setPromo,
     uiLanguage,
+    knowledgeBaseEnabled,
+    embeddingConfig,
+    summariesEnabled,
+    entitiesEnabled,
   } = useAppStore();
   const hasValidTextConfig = useMemo(
     () =>
@@ -73,6 +79,14 @@ export function EditorPage() {
       textModelConfig.model.trim().length > 0 &&
       Number.isFinite(textModelConfig.temperature),
     [textModelConfig]
+  );
+  const hasValidEmbeddingConfig = useMemo(
+    () =>
+      knowledgeBaseEnabled &&
+      embeddingConfig.apiKey.trim().length > 0 &&
+      embeddingConfig.apiUrl.trim().length > 0 &&
+      embeddingConfig.model.trim().length > 0,
+    [knowledgeBaseEnabled, embeddingConfig]
   );
   
   const [chapter, setChapter] = useState<Chapter | null>(null);
@@ -303,12 +317,68 @@ export function EditorPage() {
 
   const handleSave = async () => {
     if (!chapterId || !content) return;
-    
+
     setIsSaving(true);
     try {
       const illustrationsPayload = JSON.stringify(illustrations);
       await chapterApi.update(chapterId, content, undefined, illustrationsPayload);
       setIsSaved(true);
+
+      // Fire-and-forget: index this chapter into the local knowledge base.
+      if (hasValidEmbeddingConfig && projectId && content.trim().length > 200) {
+        const pid = projectId;
+        const cid = chapterId;
+        const ctitle = chapter?.title || '';
+        const ctext = content;
+
+        knowledgeApi
+          .indexChapter({
+            projectId: pid,
+            chapterId: cid,
+            text: ctext,
+            embeddingConfig,
+          })
+          .then((r) => {
+            if (!r.skipped) {
+              console.info(`[KB] Indexed ${r.chunksIndexed} chunks for chapter ${cid}`);
+            }
+          })
+          .catch((e) => {
+            console.warn('[KB] Index failed:', e);
+          });
+
+        if (summariesEnabled && textModelConfig.apiKey.trim()) {
+          knowledgeApi
+            .generateChapterSummary({
+              projectId: pid,
+              chapterId: cid,
+              chapterTitle: ctitle,
+              chapterText: ctext,
+              textConfig: textModelConfig,
+              embeddingConfig,
+            })
+            .catch((e) => console.warn('[KB] Chapter summary failed:', e));
+
+          knowledgeApi
+            .markRollupsStale(pid)
+            .catch((e) => console.warn('[KB] Mark stale failed:', e));
+        }
+
+        if (entitiesEnabled && textModelConfig.apiKey.trim()) {
+          const knownCharacterNames = getCharacters(pid).map((c) => c.name).filter(Boolean);
+          knowledgeApi
+            .extractEntities({
+              projectId: pid,
+              chapterId: cid,
+              chapterTitle: ctitle,
+              chapterText: ctext,
+              knownCharacterNames,
+              textConfig: textModelConfig,
+              embeddingConfig,
+            })
+            .catch((e) => console.warn('[KB] Entity extraction failed:', e));
+        }
+      }
     } catch (error) {
       console.error('Failed to save:', error);
       setError(tx(uiLanguage, '保存失败', 'Save failed'));
@@ -501,6 +571,41 @@ export function EditorPage() {
       const worldSetting = projectId ? getWorldSetting(projectId) : '';
       const timeline = projectId ? getTimeline(projectId) : '';
 
+      // Long-range semantic retrieval (RAG). Falls through silently on failure.
+      let longRangeContext = '';
+      if (hasValidEmbeddingConfig && projectId) {
+        try {
+          const queryParts = [
+            chapter.title,
+            chapter.outline_goal,
+            chapter.conflict,
+          ].filter((s): s is string => Boolean(s && s.trim()));
+          const query = queryParts.join('\n');
+
+          const recentIds = [...allChapters]
+            .filter((c) => (c.final_text || c.draft_text || '').trim().length > 0)
+            .sort((a, b) => b.order_index - a.order_index)
+            .slice(0, 3)
+            .map((c) => c.id);
+
+          longRangeContext = await knowledgeApi.retrieveContext({
+            projectId,
+            query,
+            topK: 5,
+            excludeChapterIds: recentIds,
+            embeddingConfig,
+            includeSummaries: summariesEnabled,
+            includeForeshadowing: entitiesEnabled,
+          });
+        } catch (e) {
+          console.warn('[KB] Retrieve failed, falling back to legacy context only:', e);
+        }
+      }
+
+      const enrichedWorldSetting = longRangeContext
+        ? `${worldSetting || ''}\n\n【长程相关记忆】\n${longRangeContext}`.trim()
+        : (worldSetting || null);
+
       await invoke<string>('generate_chapter_stream', {
         chapterTitle: chapter.title,
         outlineGoal: chapter.outline_goal || '推进剧情发展',
@@ -508,7 +613,7 @@ export function EditorPage() {
         previousSummary: previousSummary,
         currentContent: currentTail,
         charactersInfo: charactersInfo,
-        worldSetting: worldSetting || null,
+        worldSetting: enrichedWorldSetting,
         timeline: timeline || null,
         targetWords: TARGET_WORDS_PER_GENERATION,
         isContinuation: mode === 'continue',
@@ -913,7 +1018,7 @@ export function EditorPage() {
       {/* 顶部工具栏 */}
       <div className="flex items-center justify-between mb-4 pb-4 border-b border-gray-200 dark:border-gray-700 flex-wrap gap-2">
         <div className="flex items-center space-x-4 min-w-0 flex-shrink">
-          <Button variant="ghost" onClick={() => navigate(`/project/${projectId}`)} className="whitespace-nowrap flex-shrink-0">
+          <Button variant="ghost" onClick={smartBack} className="whitespace-nowrap flex-shrink-0">
             <ArrowLeft className="w-4 h-4 mr-2" />
             {tx(uiLanguage, '返回', 'Back')}
           </Button>

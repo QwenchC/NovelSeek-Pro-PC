@@ -1,9 +1,28 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '@store/index';
-import { aiApi } from '@services/api';
+import { aiApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
-import type { ImageEngine, TextModelConfig, TextModelProfile, TextModelProvider } from '@typings/index';
-import { CheckCircle, ExternalLink, Eye, EyeOff, Image, Key, Plus, Trash2, XCircle } from 'lucide-react';
+import type {
+  EmbeddingConfig,
+  ImageEngine,
+  KbStats,
+  TextModelConfig,
+  TextModelProfile,
+  TextModelProvider,
+} from '@typings/index';
+import {
+  CheckCircle,
+  Database,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Image,
+  Key,
+  Plus,
+  RefreshCw,
+  Trash2,
+  XCircle,
+} from 'lucide-react';
 import { tx } from '@utils/i18n';
 
 type Status = 'idle' | 'testing' | 'success' | 'error';
@@ -89,6 +108,15 @@ export function SettingsPage() {
     setPollinationsKey,
     setImageEngine,
     setComfyUIUrl,
+    knowledgeBaseEnabled,
+    embeddingConfig,
+    setKnowledgeBaseEnabled,
+    setEmbeddingConfig,
+    projects,
+    summariesEnabled,
+    entitiesEnabled,
+    setSummariesEnabled,
+    setEntitiesEnabled,
   } = useAppStore();
 
   const [localProfiles, setLocalProfiles] = useState<TextModelProfile[]>(textModelProfiles);
@@ -103,6 +131,25 @@ export function SettingsPage() {
   const [pollinationsStatus, setPollinationsStatus] = useState<Status>('idle');
   const [comfyUIStatus, setComfyUIStatus] = useState<Status>('idle');
 
+  // Knowledge base local state
+  const [localKnowledgeBaseEnabled, setLocalKnowledgeBaseEnabled] = useState(knowledgeBaseEnabled);
+  const [localEmbeddingConfig, setLocalEmbeddingConfig] = useState<EmbeddingConfig>(embeddingConfig);
+  const [showEmbeddingKey, setShowEmbeddingKey] = useState(false);
+  const [embeddingStatus, setEmbeddingStatus] = useState<Status>('idle');
+  const [rebuildProjectId, setRebuildProjectId] = useState<string>('');
+  const [isRebuilding, setIsRebuilding] = useState(false);
+  const [rebuildProgress, setRebuildProgress] = useState('');
+  const [kbStats, setKbStats] = useState<KbStats | null>(null);
+  const [kbStatsLoading, setKbStatsLoading] = useState(false);
+
+  // KB v2 local state
+  const [localSummariesEnabled, setLocalSummariesEnabled] = useState(summariesEnabled);
+  const [localEntitiesEnabled, setLocalEntitiesEnabled] = useState(entitiesEnabled);
+  const [isBuildingBookSummary, setIsBuildingBookSummary] = useState(false);
+  const [bookSummaryStatus, setBookSummaryStatus] = useState('');
+  const [isBuildingChapterSummaries, setIsBuildingChapterSummaries] = useState(false);
+  const [chapterSummariesProgress, setChapterSummariesProgress] = useState('');
+
   useEffect(() => {
     setLocalProfiles(textModelProfiles);
     setLocalActiveProfileId(activeTextModelProfileId);
@@ -112,6 +159,47 @@ export function SettingsPage() {
     setLocalImageEngine(imageEngine);
     setLocalComfyUIUrl(comfyUIUrl);
   }, [imageEngine, comfyUIUrl]);
+
+  useEffect(() => {
+    setLocalKnowledgeBaseEnabled(knowledgeBaseEnabled);
+    setLocalEmbeddingConfig(embeddingConfig);
+  }, [knowledgeBaseEnabled, embeddingConfig]);
+
+  useEffect(() => {
+    setLocalSummariesEnabled(summariesEnabled);
+    setLocalEntitiesEnabled(entitiesEnabled);
+  }, [summariesEnabled, entitiesEnabled]);
+
+  // Default the rebuild project selector to the first project once loaded.
+  useEffect(() => {
+    if (!rebuildProjectId && projects.length > 0) {
+      setRebuildProjectId(projects[0].id);
+    }
+  }, [projects, rebuildProjectId]);
+
+  // Refresh KB stats whenever the selected project changes.
+  useEffect(() => {
+    if (!rebuildProjectId) {
+      setKbStats(null);
+      return;
+    }
+    let cancelled = false;
+    setKbStatsLoading(true);
+    knowledgeApi
+      .getStats(rebuildProjectId)
+      .then((s) => {
+        if (!cancelled) setKbStats(s);
+      })
+      .catch(() => {
+        if (!cancelled) setKbStats(null);
+      })
+      .finally(() => {
+        if (!cancelled) setKbStatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rebuildProjectId]);
 
   const activeProfile = useMemo(() => {
     return (
@@ -204,6 +292,107 @@ export function SettingsPage() {
     }
   };
 
+  const isEmbeddingConfigValid = (cfg: EmbeddingConfig): boolean =>
+    cfg.apiKey.trim().length > 0 &&
+    cfg.apiUrl.trim().length > 0 &&
+    cfg.model.trim().length > 0;
+
+  const updateEmbeddingField = (patch: Partial<EmbeddingConfig>) => {
+    setLocalEmbeddingConfig((prev) => ({ ...prev, ...patch }));
+    setEmbeddingStatus('idle');
+  };
+
+  const testEmbedding = async () => {
+    if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
+      alert(
+        tx(
+          uiLanguage,
+          '请完整填写 Embedding 配置：API Key、API URL、模型',
+          'Please complete Embedding API Key, API URL, and model'
+        )
+      );
+      return;
+    }
+    setEmbeddingStatus('testing');
+    try {
+      const ok = await knowledgeApi.testEmbedding(localEmbeddingConfig);
+      setEmbeddingStatus(ok ? 'success' : 'error');
+    } catch (err) {
+      console.warn('[KB] Test embedding failed:', err);
+      setEmbeddingStatus('error');
+    }
+  };
+
+  const rebuildKnowledgeBase = async () => {
+    if (!rebuildProjectId) return;
+    if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
+      alert(
+        tx(
+          uiLanguage,
+          '请先填写并保存 Embedding 配置',
+          'Please fill in and save Embedding configuration first'
+        )
+      );
+      return;
+    }
+    const confirmed = window.confirm(
+      tx(
+        uiLanguage,
+        '将为该项目下所有已写章节重新生成 Embedding，会消耗一定 API 额度。继续？',
+        'This will re-embed every written chapter in this project and consume API quota. Continue?'
+      )
+    );
+    if (!confirmed) return;
+
+    setIsRebuilding(true);
+    setRebuildProgress(tx(uiLanguage, '准备中…', 'Preparing…'));
+    try {
+      const chapters = await chapterApi.getByProject(rebuildProjectId);
+      const eligible = chapters.filter(
+        (c) => (c.final_text || c.draft_text || '').trim().length > 200
+      );
+      let done = 0;
+      let totalChunks = 0;
+      for (const c of eligible) {
+        setRebuildProgress(
+          tx(uiLanguage, `索引中 ${done + 1} / ${eligible.length}：${c.title}`,
+            `Indexing ${done + 1} / ${eligible.length}: ${c.title}`)
+        );
+        try {
+          const r = await knowledgeApi.indexChapter({
+            projectId: rebuildProjectId,
+            chapterId: c.id,
+            text: c.final_text || c.draft_text || '',
+            embeddingConfig: localEmbeddingConfig,
+          });
+          totalChunks += r.chunksIndexed;
+        } catch (err) {
+          console.warn(`[KB] Index chapter ${c.id} failed:`, err);
+        }
+        done += 1;
+      }
+      setRebuildProgress(
+        tx(uiLanguage,
+          `完成。共索引 ${done} 章，${totalChunks} 个片段。`,
+          `Done. Indexed ${done} chapters, ${totalChunks} chunks.`)
+      );
+      // Refresh stats
+      try {
+        const s = await knowledgeApi.getStats(rebuildProjectId);
+        setKbStats(s);
+      } catch {
+        /* ignore */
+      }
+    } catch (err) {
+      console.error('[KB] Rebuild failed:', err);
+      setRebuildProgress(
+        tx(uiLanguage, `失败：${String(err)}`, `Failed: ${String(err)}`)
+      );
+    } finally {
+      setIsRebuilding(false);
+    }
+  };
+
   const saveSettings = () => {
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
       alert(
@@ -231,8 +420,137 @@ export function SettingsPage() {
     setPollinationsKey(localPollinationsKey.trim());
     setImageEngine(localImageEngine);
     setComfyUIUrl(localComfyUIUrl.trim() || 'http://localhost:8188');
+    setKnowledgeBaseEnabled(localKnowledgeBaseEnabled);
+    setEmbeddingConfig(localEmbeddingConfig);
+    setSummariesEnabled(localSummariesEnabled);
+    setEntitiesEnabled(localEntitiesEnabled);
 
     alert(tx(uiLanguage, '设置已保存', 'Settings saved'));
+  };
+
+  const buildAllChapterSummaries = async () => {
+    if (!rebuildProjectId) return;
+    if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
+      alert(
+        tx(uiLanguage,
+          '请先填写并保存 Embedding 配置',
+          'Please fill in and save Embedding configuration first')
+      );
+      return;
+    }
+    if (!activeProfile || !isProfileConfigValid(activeProfile)) {
+      alert(
+        tx(uiLanguage,
+          '请先完整配置文本模型平台',
+          'Please complete a text model platform first')
+      );
+      return;
+    }
+    const confirmed = window.confirm(
+      tx(uiLanguage,
+        '将为该项目下所有正文 >200 字的章节生成 ~150 字摘要，按文本模型平台计费。继续？',
+        'This will generate ~150-char summaries for every chapter with >200 chars of content, billed via your text model platform. Continue?')
+    );
+    if (!confirmed) return;
+
+    setIsBuildingChapterSummaries(true);
+    setChapterSummariesProgress(tx(uiLanguage, '加载章节中…', 'Loading chapters…'));
+    try {
+      const chapters = await chapterApi.getByProject(rebuildProjectId);
+      const eligible = chapters.filter(
+        (c) => (c.final_text || c.draft_text || '').trim().length > 200
+      );
+      let done = 0;
+      let failed = 0;
+      for (const c of eligible) {
+        setChapterSummariesProgress(
+          tx(uiLanguage,
+            `生成摘要 ${done + 1} / ${eligible.length}：${c.title}`,
+            `Summarizing ${done + 1} / ${eligible.length}: ${c.title}`)
+        );
+        try {
+          await knowledgeApi.generateChapterSummary({
+            projectId: rebuildProjectId,
+            chapterId: c.id,
+            chapterTitle: c.title,
+            chapterText: c.final_text || c.draft_text || '',
+            textConfig: toTextConfig(activeProfile),
+            embeddingConfig: localEmbeddingConfig,
+          });
+        } catch (err) {
+          console.warn(`[KB] Chapter summary for ${c.id} failed:`, err);
+          failed += 1;
+        }
+        done += 1;
+      }
+      setChapterSummariesProgress(
+        tx(uiLanguage,
+          `完成。成功 ${done - failed} 章，失败 ${failed} 章。现在可以生成本书梗概。`,
+          `Done. ${done - failed} succeeded, ${failed} failed. You can now build the book summary.`)
+      );
+    } catch (err) {
+      console.error('[KB] Chapter summaries rebuild failed:', err);
+      setChapterSummariesProgress(
+        tx(uiLanguage, `失败：${String(err)}`, `Failed: ${String(err)}`)
+      );
+    } finally {
+      setIsBuildingChapterSummaries(false);
+    }
+  };
+
+  const buildBookSummary = async () => {
+    if (!rebuildProjectId) return;
+    if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
+      alert(
+        tx(
+          uiLanguage,
+          '请先填写并保存 Embedding 配置',
+          'Please fill in and save Embedding configuration first'
+        )
+      );
+      return;
+    }
+    if (!activeProfile || !isProfileConfigValid(activeProfile)) {
+      alert(
+        tx(
+          uiLanguage,
+          '请先完整配置文本模型平台',
+          'Please complete a text model platform first'
+        )
+      );
+      return;
+    }
+    const proj = projects.find((p) => p.id === rebuildProjectId);
+    if (!proj) return;
+
+    setIsBuildingBookSummary(true);
+    setBookSummaryStatus(tx(uiLanguage, '生成中…', 'Generating…'));
+    try {
+      const s = await knowledgeApi.generateBookSummary({
+        projectId: rebuildProjectId,
+        bookTitle: proj.title,
+        bookDescription: proj.description || '',
+        textConfig: toTextConfig(activeProfile),
+        embeddingConfig: localEmbeddingConfig,
+      });
+      setBookSummaryStatus(
+        tx(uiLanguage,
+          `已生成全书梗概，约 ${s.wordCount} 字。`,
+          `Book summary generated, ~${s.wordCount} chars.`)
+      );
+    } catch (err) {
+      console.error('[KB] Book summary failed:', err);
+      const msg = String(err);
+      // Friendlier error when the underlying chapter summaries are missing.
+      const hint = msg.includes('No chapter or arc summaries')
+        ? tx(uiLanguage,
+            '失败：还没有任何章节摘要可供汇总。请先点击上方「重建章节摘要」按钮。',
+            'Failed: no chapter summaries to roll up. Click "Rebuild Chapter Summaries" above first.')
+        : tx(uiLanguage, `失败：${msg}`, `Failed: ${msg}`);
+      setBookSummaryStatus(hint);
+    } finally {
+      setIsBuildingBookSummary(false);
+    }
   };
 
   return (
@@ -599,6 +917,348 @@ export function SettingsPage() {
                   <span className="text-sm">{tx(uiLanguage, '连接失败，请确认 ComfyUI 已启动', 'Connection failed. Ensure ComfyUI is running.')}</span>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Local Knowledge Base (RAG) ─────────────────────────── */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <div className="flex items-center space-x-2 mb-4">
+            <Database className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+              {tx(uiLanguage, '本地知识库（实验性）', 'Local Knowledge Base (Experimental)')}
+            </h2>
+          </div>
+
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 leading-relaxed">
+            {tx(
+              uiLanguage,
+              '开启后，每次保存章节会将正文切片并通过 Embedding 模型转为向量存入本地数据库；生成新章节时会自动检索历史中最相关的片段，作为「长程相关记忆」拼到提示词末尾。原有的近 3 章上下文逻辑不变，KB 检索仅作增强。',
+              'When enabled, saving a chapter chunks its text and embeds it locally; new chapter generation retrieves the most relevant past snippets and appends them as long-range memory. The legacy last-3-chapters context is unchanged — KB only augments it.'
+            )}
+          </p>
+
+          {/* Enable toggle */}
+          <label className="flex items-center gap-3 mb-5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={localKnowledgeBaseEnabled}
+              onChange={(e) => setLocalKnowledgeBaseEnabled(e.target.checked)}
+              className="w-4 h-4 accent-primary-500"
+            />
+            <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
+              {tx(uiLanguage, '启用本地知识库', 'Enable local knowledge base')}
+            </span>
+          </label>
+
+          <div
+            className={`space-y-4 rounded-lg border p-4 transition-opacity ${
+              localKnowledgeBaseEnabled
+                ? 'border-primary-300 dark:border-primary-700'
+                : 'border-gray-200 dark:border-gray-700 opacity-60'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-gray-800 dark:text-gray-200">
+                {tx(uiLanguage, 'Embedding 服务（OpenAI 兼容）', 'Embedding Provider (OpenAI Compatible)')}
+              </span>
+              <a
+                href="https://bailian.console.aliyun.com/?apiKey=1#/api-key"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+              >
+                {tx(uiLanguage, '获取百炼 API Key', 'Get Bailian API Key')}
+                <ExternalLink className="w-3 h-3 ml-1" />
+              </a>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                API Key
+              </label>
+              <div className="relative">
+                <input
+                  type={showEmbeddingKey ? 'text' : 'password'}
+                  value={localEmbeddingConfig.apiKey}
+                  onChange={(e) => updateEmbeddingField({ apiKey: e.target.value })}
+                  placeholder="sk-..."
+                  disabled={!localKnowledgeBaseEnabled}
+                  className="w-full px-3 py-2 pr-11 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-50 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEmbeddingKey((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                >
+                  {showEmbeddingKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr] gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  API URL
+                </label>
+                <input
+                  value={localEmbeddingConfig.apiUrl}
+                  onChange={(e) => updateEmbeddingField({ apiUrl: e.target.value })}
+                  placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  disabled={!localKnowledgeBaseEnabled}
+                  className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-50 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {tx(uiLanguage, '模型', 'Model')}
+                </label>
+                <input
+                  value={localEmbeddingConfig.model}
+                  onChange={(e) => updateEmbeddingField({ model: e.target.value })}
+                  placeholder="text-embedding-v3"
+                  disabled={!localKnowledgeBaseEnabled}
+                  className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-50 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {tx(uiLanguage, '维度（可选）', 'Dimensions (optional)')}
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={localEmbeddingConfig.dimensions ?? ''}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    updateEmbeddingField({
+                      dimensions: Number.isFinite(n) && n > 0 ? n : undefined,
+                    });
+                  }}
+                  placeholder="1024"
+                  disabled={!localKnowledgeBaseEnabled}
+                  className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-50 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {tx(
+                uiLanguage,
+                '默认配置指向阿里云百炼。也支持任意 OpenAI 兼容的 Embedding 端点（硅基流动、智谱 GLM、OpenAI 等）。',
+                'Defaults point to Alibaba Cloud Bailian (DashScope). Any OpenAI-compatible embedding endpoint also works (SiliconFlow, Zhipu GLM, OpenAI, etc.).'
+              )}
+            </p>
+
+            <div className="flex items-center space-x-2">
+              <Button
+                onClick={testEmbedding}
+                loading={embeddingStatus === 'testing'}
+                disabled={!localKnowledgeBaseEnabled}
+              >
+                {tx(uiLanguage, '测试 Embedding 连接', 'Test Embedding')}
+              </Button>
+              {embeddingStatus === 'success' && (
+                <div className="flex items-center text-green-600 dark:text-green-400">
+                  <CheckCircle className="w-4 h-4 mr-1" />
+                  <span className="text-sm">{tx(uiLanguage, '连接成功', 'Connected')}</span>
+                </div>
+              )}
+              {embeddingStatus === 'error' && (
+                <div className="flex items-center text-red-600 dark:text-red-400">
+                  <XCircle className="w-4 h-4 mr-1" />
+                  <span className="text-sm">{tx(uiLanguage, '连接失败', 'Connection Failed')}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Rebuild / Stats panel ─────────────────────────────── */}
+          <div className="mt-5 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+            <h3 className="text-base font-medium text-gray-900 dark:text-white">
+              {tx(uiLanguage, '项目知识库管理', 'Project Knowledge Base')}
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {tx(uiLanguage, '选择项目', 'Select Project')}
+                </label>
+                <select
+                  value={rebuildProjectId}
+                  onChange={(e) => setRebuildProjectId(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                >
+                  {projects.length === 0 && (
+                    <option value="">{tx(uiLanguage, '（暂无项目）', '(No projects)')}</option>
+                  )}
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-end">
+                <Button
+                  onClick={rebuildKnowledgeBase}
+                  loading={isRebuilding}
+                  disabled={!localKnowledgeBaseEnabled || !rebuildProjectId || isRebuilding}
+                >
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  {tx(uiLanguage, '重建知识库', 'Rebuild')}
+                </Button>
+              </div>
+            </div>
+
+            {rebuildProgress && (
+              <p className="text-xs text-gray-600 dark:text-gray-400">
+                {rebuildProgress}
+              </p>
+            )}
+
+            <div className="text-xs text-gray-600 dark:text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
+              {kbStatsLoading ? (
+                <span>{tx(uiLanguage, '加载统计中…', 'Loading stats…')}</span>
+              ) : kbStats ? (
+                <>
+                  <span>
+                    {tx(uiLanguage, `已索引片段：${kbStats.totalChunks}`,
+                      `Chunks indexed: ${kbStats.totalChunks}`)}
+                  </span>
+                  <span>
+                    {tx(uiLanguage, `已索引来源：${kbStats.totalSources}`,
+                      `Sources indexed: ${kbStats.totalSources}`)}
+                  </span>
+                  {kbStats.embeddingModels.length > 0 && (
+                    <span>
+                      {tx(uiLanguage, '使用模型：', 'Models: ')}
+                      {kbStats.embeddingModels.join(', ')}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span>
+                  {tx(uiLanguage, '该项目暂无索引数据', 'No KB data for this project yet')}
+                </span>
+              )}
+            </div>
+
+            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+              {tx(
+                uiLanguage,
+                '提示：日常保存章节时会自动入库，只有第一次接入 / 切换 embedding 模型时才需要"重建"。',
+                'Tip: regular chapter saves auto-index. Use "Rebuild" only on first setup or after switching embedding models.'
+              )}
+            </p>
+          </div>
+
+          {/* ── v2 augmentation layers ─────────────────────────── */}
+          <div className={`mt-5 rounded-lg border p-4 space-y-4 transition-opacity ${
+              localKnowledgeBaseEnabled
+                ? 'border-amber-300 dark:border-amber-700'
+                : 'border-gray-200 dark:border-gray-700 opacity-60'
+            }`}>
+            <h3 className="text-base font-medium text-gray-900 dark:text-white">
+              {tx(uiLanguage, '增强层（v2，可选）', 'Augmentation Layers (v2, optional)')}
+            </h3>
+            <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+              {tx(uiLanguage,
+                '这两层增强会在每次保存章节时额外调用一次 Chat Completion（按文本模型平台计费），并在生成新章节时把"全书梗概 / 当前弧线进度 / 未回收伏笔"塞进提示词。建议长篇（30 章以上）开启。',
+                'Each layer triggers one extra Chat Completion per chapter save (billed via your text model platform), and injects book/arc summaries plus open foreshadowing into the prompt. Recommended for long novels (30+ chapters).')}
+            </p>
+
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={localSummariesEnabled}
+                onChange={(e) => setLocalSummariesEnabled(e.target.checked)}
+                disabled={!localKnowledgeBaseEnabled}
+                className="mt-0.5 w-4 h-4 accent-primary-500"
+              />
+              <div>
+                <div className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  {tx(uiLanguage, '启用分层摘要（章节 / 弧线 / 全书）', 'Enable hierarchical summaries (chapter / arc / book)')}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {tx(uiLanguage,
+                    '保存章节时自动生成 ~150 字章节摘要，提示词里追加「全书梗概」+「当前弧线进度」段。',
+                    'Auto-generates ~150-char chapter summaries on save. Prompts gain "book synopsis" and "current arc progress" sections.')}
+                </div>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={localEntitiesEnabled}
+                onChange={(e) => setLocalEntitiesEnabled(e.target.checked)}
+                disabled={!localKnowledgeBaseEnabled}
+                className="mt-0.5 w-4 h-4 accent-primary-500"
+              />
+              <div>
+                <div className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  {tx(uiLanguage, '启用实体抽取（人物登场 / 伏笔 / 地点 / 事件 / 物品）', 'Enable entity extraction (characters / foreshadowing / locations / events / items)')}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {tx(uiLanguage,
+                    '保存章节时自动结构化抽取，并在提示词里追加「未回收伏笔」清单，避免长篇写飞。',
+                    'Structured extraction on save; "open foreshadowing" list is added to the prompt to keep long arcs coherent.')}
+                </div>
+              </div>
+            </label>
+
+            {/* Manual rebuild buttons */}
+            <div className="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-4">
+              {/* Step 1: chapter summaries */}
+              <div>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <div className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                      {tx(uiLanguage, '步骤 1：重建所有章节摘要', 'Step 1: Rebuild all chapter summaries')}
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {tx(uiLanguage,
+                        '一次性为已有章节生成摘要（首次启用必跑）。开启摘要 toggle 后，日常保存章节会自动维护。',
+                        'One-shot pass over existing chapters (required on first enable). After toggle is on, regular chapter saves keep summaries up-to-date.')}
+                    </div>
+                  </div>
+                  <Button
+                    onClick={buildAllChapterSummaries}
+                    loading={isBuildingChapterSummaries}
+                    disabled={!localKnowledgeBaseEnabled || !rebuildProjectId || isBuildingChapterSummaries}
+                  >
+                    {tx(uiLanguage, '重建章节摘要', 'Rebuild Chapter Summaries')}
+                  </Button>
+                </div>
+                {chapterSummariesProgress && (
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">{chapterSummariesProgress}</p>
+                )}
+              </div>
+
+              {/* Step 2: book summary */}
+              <div>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <div className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                      {tx(uiLanguage, '步骤 2：生成「全书梗概」', 'Step 2: Build book summary')}
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {tx(uiLanguage,
+                        '基于已有章节 / 弧线摘要汇总。建议每 5-10 章手动刷新一次。',
+                        'Rolls up existing chapter / arc summaries. Refresh every 5–10 chapters.')}
+                    </div>
+                  </div>
+                  <Button
+                    onClick={buildBookSummary}
+                    loading={isBuildingBookSummary}
+                    disabled={!localKnowledgeBaseEnabled || !rebuildProjectId || isBuildingBookSummary}
+                  >
+                    {tx(uiLanguage, '生成本书梗概', 'Build Book Summary')}
+                  </Button>
+                </div>
+                {bookSummaryStatus && (
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">{bookSummaryStatus}</p>
+                )}
+              </div>
             </div>
           </div>
         </div>

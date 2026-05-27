@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import { ArrowLeft, Download, FileText, ImageOff, X } from 'lucide-react';
 import { Button } from '@components/Button';
@@ -7,6 +7,7 @@ import { chapterApi, projectApi, systemApi } from '@services/api';
 import { useAppStore } from '@store/index';
 import type { Chapter, Project, SystemFontOption } from '@typings/index';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 
 interface CoverImageItem {
   id: string;
@@ -759,7 +760,7 @@ ${navPoints}
 
 export function LongNovelExportPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const smartBack = useSmartBack(id ? `/long-novel/${id}` : '/long-novels');
   const { uiLanguage, promoByChapter } = useAppStore((state) => ({
     uiLanguage: state.uiLanguage,
     promoByChapter: state.promoByChapter,
@@ -1259,8 +1260,8 @@ export function LongNovelExportPage() {
     return (
       <div className="space-y-3">
         <p className="text-sm text-red-600 dark:text-red-400">{error || tx(uiLanguage, '项目不存在', 'Project not found')}</p>
-        <Button variant="outline" onClick={() => navigate('/')}>
-          {tx(uiLanguage, '返回首页', 'Back to Home')}
+        <Button variant="outline" onClick={smartBack}>
+          {tx(uiLanguage, '返回', 'Back')}
         </Button>
       </div>
     );
@@ -1269,9 +1270,9 @@ export function LongNovelExportPage() {
   return (
     <div className="h-full flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" onClick={() => navigate(`/long-novel/${id}`)} className="whitespace-nowrap">
+        <Button variant="ghost" onClick={smartBack} className="whitespace-nowrap">
           <ArrowLeft className="w-4 h-4 mr-2" />
-          {tx(uiLanguage, '返回章节列表', 'Back to Chapter List')}
+          {tx(uiLanguage, '返回', 'Back')}
         </Button>
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">{tx(uiLanguage, '导出电子书', 'Export Ebook')}</h1>
       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import type { Character, PlotArc } from '@store/index';
 import { projectApi } from '@services/api';
@@ -13,6 +13,7 @@ import { invoke } from '@tauri-apps/api/tauri';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 import { confirmDialog } from '@utils/index';
 
 // ── Section parser ─────────────────────────────────────────────
@@ -375,7 +376,7 @@ function SaveOutlineDialog({
 // ── Main Page ──────────────────────────────────────────────────
 export function LongNovelOutlinePage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const smartBack = useSmartBack(id ? `/long-novel/${id}` : '/long-novels');
   const {
     currentProject, setCurrentProject,
     textModelConfig, uiLanguage,
@@ -578,7 +579,7 @@ export function LongNovelOutlinePage() {
       {/* Header */}
       <div className="flex items-center gap-3">
         <button
-          onClick={() => navigate(`/long-novel/${id}`)}
+          onClick={smartBack}
           className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
         >
           <ArrowLeft className="w-5 h-5" />

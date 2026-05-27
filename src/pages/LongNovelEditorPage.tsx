@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import type { PlotArc } from '@store/index';
-import { chapterApi } from '@services/api';
+import { chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
+import { BookSummaryButton } from '@components/BookSummaryButton';
+import { useSmartBack } from '@utils/useSmartBack';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -136,6 +138,7 @@ interface IllustrationConfig {
 export function LongNovelEditorPage() {
   const { id, chapterId } = useParams<{ id: string; chapterId?: string }>();
   const navigate = useNavigate();
+  const smartBack = useSmartBack(id ? `/long-novel/${id}` : '/long-novels');
   const {
     textModelConfig, uiLanguage,
     getCharacters, getWorldSetting, getTimeline,
@@ -143,7 +146,18 @@ export function LongNovelEditorPage() {
     getLongNovelOutline, projects,
     pollinationsKey, imageEngine, comfyUIUrl,
     getPromo, setPromo,
+    knowledgeBaseEnabled, embeddingConfig,
+    summariesEnabled, entitiesEnabled,
   } = useAppStore();
+
+  const hasValidEmbeddingConfig = useMemo(
+    () =>
+      knowledgeBaseEnabled &&
+      embeddingConfig.apiKey.trim().length > 0 &&
+      embeddingConfig.apiUrl.trim().length > 0 &&
+      embeddingConfig.model.trim().length > 0,
+    [knowledgeBaseEnabled, embeddingConfig]
+  );
 
   const hasValidTextConfig = useMemo(
     () =>
@@ -224,7 +238,9 @@ export function LongNovelEditorPage() {
   const sortedArcs = [...arcs].sort((a, b) => a.order - b.order);
   // The first upcoming arc by order is activatable only when no arc is active/ending
   const nextActivatableArc = !activeArc ? sortedArcs.find((a) => a.status === 'upcoming') : undefined;
-  const projectTitle = projects.find((p) => p.id === id)?.title || '';
+  const currentProjectMeta = projects.find((p) => p.id === id);
+  const projectTitle = currentProjectMeta?.title || '';
+  const projectDescription = currentProjectMeta?.description || '';
 
   const paragraphs = useMemo(() => {
     const normalized = content.replace(/\r\n/g, '\n').trim();
@@ -347,6 +363,74 @@ export function LongNovelEditorPage() {
       const updated: Chapter = { ...chapter, final_text: content, draft_text: content, word_count: wordCount, illustrations: illustrationsPayload };
       setChapter(updated);
       setAllChapters((prev) => prev.map((c) => c.id === chapter.id ? updated : c));
+
+      // Fire-and-forget: index this chapter into the local knowledge base.
+      // Idempotent — KnowledgeService skips if content hash unchanged.
+      if (hasValidEmbeddingConfig && id && content.trim().length > 200) {
+        const projectId = id;
+        const chapterId = chapter.id;
+        const chapterTitle = chapter.title;
+        const chapterText = content;
+
+        knowledgeApi
+          .indexChapter({
+            projectId,
+            chapterId,
+            text: chapterText,
+            embeddingConfig,
+          })
+          .then((r) => {
+            if (!r.skipped) {
+              console.info(`[KB] Indexed ${r.chunksIndexed} chunks for chapter ${chapterId}`);
+            }
+          })
+          .catch((e) => {
+            console.warn('[KB] Index failed:', e);
+          });
+
+        // v2.0: chapter summary + mark arc/book rollups stale (fire-and-forget).
+        // Skipped silently if textConfig is incomplete.
+        if (summariesEnabled && textModelConfig.apiKey.trim()) {
+          knowledgeApi
+            .generateChapterSummary({
+              projectId,
+              chapterId,
+              chapterTitle,
+              chapterText,
+              textConfig: textModelConfig,
+              embeddingConfig,
+            })
+            .then((s) =>
+              console.info(`[KB] Chapter summary updated (${s.wordCount} chars)`)
+            )
+            .catch((e) => console.warn('[KB] Chapter summary failed:', e));
+
+          knowledgeApi
+            .markRollupsStale(projectId)
+            .catch((e) => console.warn('[KB] Mark stale failed:', e));
+        }
+
+        // v2.1: entity extraction (fire-and-forget).
+        if (entitiesEnabled && textModelConfig.apiKey.trim()) {
+          const knownCharacterNames = getCharacters(projectId).map((c) => c.name).filter(Boolean);
+          knowledgeApi
+            .extractEntities({
+              projectId,
+              chapterId,
+              chapterTitle,
+              chapterText,
+              knownCharacterNames,
+              textConfig: textModelConfig,
+              embeddingConfig,
+            })
+            .then((stats) =>
+              console.info(
+                `[KB] Entities: +${stats.charactersAdded}c +${stats.foreshadowingAdded}f +${stats.locationsAdded}l +${stats.eventsAdded}e +${stats.itemsAdded}i`
+              )
+            )
+            .catch((e) => console.warn('[KB] Entity extraction failed:', e));
+        }
+      }
     } catch {
       setError(tx(uiLanguage, '保存失败', 'Save failed'));
     } finally {
@@ -386,6 +470,46 @@ export function LongNovelEditorPage() {
       ? (worldSetting ? `${arcContext}\n\n${worldSetting}` : arcContext)
       : worldSetting || undefined;
 
+    // Long-range semantic retrieval (RAG). Runs in parallel with stream setup.
+    // Falls through silently on error — legacy "last 3 chapters" context still applies.
+    let longRangeContext = '';
+    if (hasValidEmbeddingConfig && id) {
+      try {
+        const queryParts = [
+          chapter.title,
+          chapter.outline_goal,
+          chapter.conflict,
+          activeArc?.summary,
+          activeArc?.title ? `当前弧线：${activeArc.title}` : '',
+        ].filter((s): s is string => Boolean(s && s.trim()));
+        const query = queryParts.join('\n');
+
+        // Exclude the 3 most recent written chapters — they're already in `previousSummary`.
+        const recentIds = [...allChapters]
+          .filter((c) => (c.final_text || c.draft_text || '').trim().length > 0)
+          .sort((a, b) => b.order_index - a.order_index)
+          .slice(0, 3)
+          .map((c) => c.id);
+
+        longRangeContext = await knowledgeApi.retrieveContext({
+          projectId: id,
+          query,
+          topK: 5,
+          excludeChapterIds: recentIds,
+          embeddingConfig,
+          includeSummaries: summariesEnabled,
+          activeArcId: activeArc?.id,
+          includeForeshadowing: entitiesEnabled,
+        });
+      } catch (e) {
+        console.warn('[KB] Retrieve failed, falling back to legacy context only:', e);
+      }
+    }
+
+    const enrichedWorldSetting = longRangeContext
+      ? `${combinedWorldSetting || ''}\n\n【长程相关记忆】\n${longRangeContext}`.trim()
+      : combinedWorldSetting;
+
     const isContinuation = content.trim().length > 0;
 
     const unlisten = await listen<string>('chapter-stream', (event) => {
@@ -408,7 +532,7 @@ export function LongNovelEditorPage() {
         currentContent: isContinuation ? content : undefined,
         chapterList: chapterList || undefined,
         charactersInfo,
-        worldSetting: combinedWorldSetting,
+        worldSetting: enrichedWorldSetting,
         timeline: timeline || undefined,
         targetWords: TARGET_WORDS,
         isContinuation,
@@ -787,7 +911,7 @@ export function LongNovelEditorPage() {
       <div className="w-60 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col bg-white dark:bg-gray-800">
         <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
           <button
-            onClick={() => navigate(`/long-novel/${id}`)}
+            onClick={smartBack}
             className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -897,6 +1021,14 @@ export function LongNovelEditorPage() {
                     <AlertTriangle className="w-3 h-3" />
                     {error}
                   </span>
+                )}
+                {id && (
+                  <BookSummaryButton
+                    projectId={id}
+                    projectTitle={projectTitle}
+                    projectDescription={projectDescription}
+                    compact
+                  />
                 )}
                 <Button
                   variant="outline"

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/tauri';
 import { useAppStore, Character } from '@store/index';
 import { aiApi, projectApi } from '@services/api';
@@ -8,6 +8,7 @@ import { Button } from '@components/Button';
 import { ArrowLeft, Plus, Edit, Trash2, User, Save, Star, Sparkles, AlertCircle, Check } from 'lucide-react';
 import { confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 
 const ONE_INCH_WIDTH = 500;
 const ONE_INCH_HEIGHT = 700;
@@ -107,7 +108,7 @@ const normalizeValidCharacters = (input: Character[]): Character[] =>
 
 export function CharactersPage() {
   const { id: projectId } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const smartBack = useSmartBack(projectId ? `/project/${projectId}` : '/');
   const {
     uiLanguage,
     currentProject,
@@ -130,17 +131,18 @@ export function CharactersPage() {
   const [outlineDiffs, setOutlineDiffs] = useState<CharacterDiff[]>([]);
   const [acceptedDiffIds, setAcceptedDiffIds] = useState<Set<string>>(new Set());
 
-  // Navigation blocker when there are unsaved changes
+  // Navigation blocker when there are unsaved changes.
+  // pendingNav stores the deferred navigation action as a callback so that both
+  // path-based navigation (forward) and smart-back navigation share one mechanism.
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
-  const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
+  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
 
-  /** Navigate away with unsaved-changes guard */
-  const guardedNavigate = (path: string) => {
+  const guardedBack = () => {
     if (hasChanges) {
-      setPendingNavPath(path);
+      setPendingNav(() => smartBack);
       setLeaveDialogOpen(true);
     } else {
-      navigate(path);
+      smartBack();
     }
   };
 
@@ -434,7 +436,7 @@ export function CharactersPage() {
 
   // Save silently then proceed with blocked navigation
   const handleSaveAndProceed = async () => {
-    if (!projectId) { setLeaveDialogOpen(false); if (pendingNavPath) navigate(pendingNavPath); return; }
+    if (!projectId) { setLeaveDialogOpen(false); pendingNav?.(); return; }
     try {
       await syncCharactersToOutline(characters);
       setHasChanges(false);
@@ -442,7 +444,7 @@ export function CharactersPage() {
       console.error('Failed to save before leaving:', error);
     } finally {
       setLeaveDialogOpen(false);
-      if (pendingNavPath) navigate(pendingNavPath);
+      pendingNav?.();
     }
   };
 
@@ -688,7 +690,7 @@ export function CharactersPage() {
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <Button
           variant="ghost"
-          onClick={() => guardedNavigate(`/project/${projectId}`)}
+          onClick={guardedBack}
           className="whitespace-nowrap self-start"
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
@@ -1256,14 +1258,14 @@ export function CharactersPage() {
             <div className="flex gap-2">
               <Button
                 variant="outline"
-                onClick={() => { setLeaveDialogOpen(false); setPendingNavPath(null); }}
+                onClick={() => { setLeaveDialogOpen(false); setPendingNav(null); }}
                 className="flex-1"
               >
                 {tx(uiLanguage, '取消', 'Cancel')}
               </Button>
               <Button
                 variant="outline"
-                onClick={() => { setLeaveDialogOpen(false); if (pendingNavPath) navigate(pendingNavPath); }}
+                onClick={() => { setLeaveDialogOpen(false); pendingNav?.(); }}
                 className="flex-1 !text-red-600 !border-red-300 hover:!bg-red-50 dark:hover:!bg-red-900/20"
               >
                 {tx(uiLanguage, '否', 'No')}

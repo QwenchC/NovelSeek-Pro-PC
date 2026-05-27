@@ -63,6 +63,21 @@ async fn main() {
             commands::stream::generate_promo_image,
             commands::system::list_system_fonts,
             commands::system::get_system_font_base64,
+            commands::knowledge::kb_index_chapter,
+            commands::knowledge::kb_retrieve_context,
+            commands::knowledge::kb_forget_source,
+            commands::knowledge::kb_test_embedding,
+            commands::knowledge::kb_get_stats,
+            commands::knowledge::kb_generate_chapter_summary,
+            commands::knowledge::kb_generate_arc_summary,
+            commands::knowledge::kb_generate_book_summary,
+            commands::knowledge::kb_list_summaries,
+            commands::knowledge::kb_mark_rollups_stale,
+            commands::knowledge::kb_forget_summary,
+            commands::knowledge::kb_extract_entities,
+            commands::knowledge::kb_list_entities,
+            commands::knowledge::kb_set_entity_status,
+            commands::knowledge::kb_handle_chapter_deletion,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

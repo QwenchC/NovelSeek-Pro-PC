@@ -190,3 +190,43 @@ impl TextModelConfigInput {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingConfigInput {
+    pub api_key: String,
+    pub api_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub dimensions: Option<u32>,
+}
+
+impl Default for EmbeddingConfigInput {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            model: "text-embedding-v3".to_string(),
+            dimensions: Some(1024),
+        }
+    }
+}
+
+impl EmbeddingConfigInput {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.api_key.trim().is_empty() {
+            return Err("Embedding API Key 不能为空".to_string());
+        }
+        if self.api_url.trim().is_empty() {
+            return Err("Embedding API URL 不能为空".to_string());
+        }
+        if self.model.trim().is_empty() {
+            return Err("Embedding 模型名称不能为空".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn normalized_api_base_url(&self) -> String {
+        self.api_url.trim().trim_end_matches('/').to_string()
+    }
+}

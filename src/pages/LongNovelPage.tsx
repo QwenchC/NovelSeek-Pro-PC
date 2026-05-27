@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import type { PlotArc } from '@store/index';
-import { projectApi, chapterApi } from '@services/api';
+import { projectApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
+import { BookSummaryButton } from '@components/BookSummaryButton';
+import { useSmartBack } from '@utils/useSmartBack';
 import {
   ArrowLeft, BookOpen, Layers, Users, FileText, Plus, Edit2,
   Trash2, ChevronDown, ChevronUp, Check, Play, Sunset,
@@ -66,6 +68,7 @@ function arcStatusClass(status: PlotArc['status']) {
 export function LongNovelPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const smartBack = useSmartBack('/long-novels');
   const {
     uiLanguage,
     currentProject, setCurrentProject,
@@ -214,6 +217,16 @@ export function LongNovelPage() {
     );
     if (!confirmed || !id) return;
     await chapterApi.delete(chapterId);
+    // Best-effort cleanup of knowledge-base entries; never block the user on this.
+    knowledgeApi
+      .forgetSource({ projectId: id, sourceType: 'chapter', sourceId: chapterId })
+      .catch((e) => console.warn('[KB] forgetSource failed:', e));
+    knowledgeApi
+      .forgetSummary({ projectId: id, scopeType: 'chapter', scopeId: chapterId })
+      .catch((e) => console.warn('[KB] forgetSummary failed:', e));
+    knowledgeApi
+      .handleChapterDeletion(id, chapterId)
+      .catch((e) => console.warn('[KB] handleChapterDeletion failed:', e));
     const updated = await chapterApi.getByProject(id);
     setChapters(updated);
   };
@@ -242,7 +255,7 @@ export function LongNovelPage() {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4">
         <p className="text-gray-500">{tx(uiLanguage, '项目不存在', 'Project not found')}</p>
-        <Button onClick={() => navigate('/long-novels')} variant="outline">
+        <Button onClick={smartBack} variant="outline">
           <ArrowLeft className="w-4 h-4 mr-2" />
           {tx(uiLanguage, '返回', 'Back')}
         </Button>
@@ -255,7 +268,7 @@ export function LongNovelPage() {
       {/* Header */}
       <div className="flex items-start gap-4">
         <button
-          onClick={() => navigate('/long-novels')}
+          onClick={smartBack}
           className="mt-1 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -318,6 +331,14 @@ export function LongNovelPage() {
             <FileDown className="w-4 h-4 mr-1.5" />
             {tx(uiLanguage, '导出电子书', 'Export Ebook')}
           </Button>
+          {id && (
+            <BookSummaryButton
+              projectId={id}
+              projectTitle={currentProject.title}
+              projectDescription={currentProject.description}
+              compact
+            />
+          )}
           <Button
             onClick={() => navigate(`/long-novel/${id}/editor`)}
             className="text-sm bg-purple-600 hover:bg-purple-700"

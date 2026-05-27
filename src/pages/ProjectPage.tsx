@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import { projectApi, chapterApi } from '@services/api';
+import { projectApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
 import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight, FileDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -9,6 +9,7 @@ import remarkGfm from 'remark-gfm';
 import type { Chapter, Project } from '@typings/index';
 import { alertDialog, confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
+import { useSmartBack } from '@utils/useSmartBack';
 
 interface CoverImageItem {
   id: string;
@@ -81,6 +82,7 @@ const normalizeCoverImages = (raw: string | null | undefined, coverLabelPrefix =
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const smartBack = useSmartBack('/');
   const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey, imageEngine, comfyUIUrl, uiLanguage } = useAppStore();
   const hasValidTextConfig = useMemo(
     () =>
@@ -239,6 +241,17 @@ export function ProjectPage() {
     }
     try {
       await chapterApi.delete(chapterId);
+      if (id) {
+        knowledgeApi
+          .forgetSource({ projectId: id, sourceType: 'chapter', sourceId: chapterId })
+          .catch((e) => console.warn('[KB] forgetSource failed:', e));
+        knowledgeApi
+          .forgetSummary({ projectId: id, scopeType: 'chapter', scopeId: chapterId })
+          .catch((e) => console.warn('[KB] forgetSummary failed:', e));
+        knowledgeApi
+          .handleChapterDeletion(id, chapterId)
+          .catch((e) => console.warn('[KB] handleChapterDeletion failed:', e));
+      }
       if (target && target.title.trim() === '序章' && target.order_index === 1) {
         const toShift = chapters.filter(ch => ch.id !== chapterId && ch.order_index > 1);
         for (const chapter of toShift.sort((a, b) => a.order_index - b.order_index)) {
@@ -430,7 +443,7 @@ export function ProjectPage() {
   return (
     <div className="w-full max-w-full xl:max-w-7xl mx-auto">
       <div className="mb-6">
-        <Button variant="ghost" onClick={() => navigate('/')}>
+        <Button variant="ghost" onClick={smartBack}>
           <ArrowLeft className="w-4 h-4 mr-2" />
           {tx(uiLanguage, '返回', 'Back')}
         </Button>
