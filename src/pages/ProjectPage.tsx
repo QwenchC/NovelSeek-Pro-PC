@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
-import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight, FileDown } from 'lucide-react';
+import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight, FileDown, BookOpen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Chapter, Project } from '@typings/index';
@@ -83,7 +83,7 @@ export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const smartBack = useSmartBack('/');
-  const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey, imageEngine, comfyUIUrl, uiLanguage } = useAppStore();
+  const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey, imageEngine, comfyUIUrl, uiLanguage, setNovelType } = useAppStore();
   const hasValidTextConfig = useMemo(
     () =>
       textModelConfig.apiKey.trim().length > 0 &&
@@ -484,6 +484,28 @@ export function ProjectPage() {
             <Button variant="outline" onClick={() => navigate(`/project/${id}/export`)} className="whitespace-nowrap">
               <FileDown className="w-4 h-4 mr-2" />
               {tx(uiLanguage, '导出电子书', 'Export Ebook')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!id) return;
+                const ok = await confirmDialog(
+                  tx(uiLanguage,
+                    '将本项目转为长篇小说？章节内容会保留，但需要在长篇主页里重新设置角色、剧情弧线、世界观、境界系统等元数据（这些数据在 dev/生产版本间不共享）。',
+                    'Convert this project to a long novel? Chapter content is preserved, but you\'ll need to re-enter characters, plot arcs, world setting, realm system, etc. in the long-novel hub (this metadata is not shared between dev/production builds).'),
+                  tx(uiLanguage, '转为长篇小说', 'Convert to Long Novel')
+                );
+                if (!ok) return;
+                setNovelType(id, 'long');
+                navigate(`/long-novel/${id}`);
+              }}
+              className="whitespace-nowrap text-purple-700 border-purple-300 hover:bg-purple-50 dark:text-purple-300 dark:border-purple-700 dark:hover:bg-purple-900/20"
+              title={tx(uiLanguage,
+                '把短篇标记为长篇——用于从备份/旧版本恢复的项目',
+                'Mark as long novel — useful when recovering a project from a backup or older build')}
+            >
+              <BookOpen className="w-4 h-4 mr-2" />
+              {tx(uiLanguage, '转为长篇', 'To Long Novel')}
             </Button>
           </div>
         </div>

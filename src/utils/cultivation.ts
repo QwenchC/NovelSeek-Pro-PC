@@ -1,5 +1,42 @@
-import type { CultivationRealm, CharacterRealmEvent, Character } from '@store/index';
+import type {
+  CultivationRealm,
+  CultivationSubRealm,
+  CharacterRealmEvent,
+  Character,
+} from '@store/index';
 import type { Chapter } from '@typings/index';
+
+export interface ResolvedRealm {
+  major: CultivationRealm;
+  /** Present iff the referenced id is a sub-realm; absent if it points at the major itself. */
+  sub?: CultivationSubRealm;
+}
+
+/**
+ * Resolve a realm ID against the project's realm tree. Returns either:
+ * - `{ major }` if the id points at a top-level realm
+ * - `{ major, sub }` if the id points at a sub-realm (we always include the
+ *   parent major so callers can render the full label)
+ * - `null` if the id is no longer valid (realm was deleted)
+ */
+export function findRealmById(
+  realms: CultivationRealm[],
+  id: string
+): ResolvedRealm | null {
+  for (const r of realms) {
+    if (r.id === id) return { major: r };
+    if (r.subRealms) {
+      const sub = r.subRealms.find((s) => s.id === id);
+      if (sub) return { major: r, sub };
+    }
+  }
+  return null;
+}
+
+/** Display label for a resolved realm. "炼气期 · 一层" or "筑基期" (when no sub). */
+export function realmLabel(resolved: ResolvedRealm): string {
+  return resolved.sub ? `${resolved.major.name} · ${resolved.sub.name}` : resolved.major.name;
+}
 
 /**
  * Resolve a character's current realm based on the latest realm event whose
@@ -10,12 +47,16 @@ export function computeCurrentRealm(
   characterId: string,
   events: CharacterRealmEvent[],
   chapterMap: Map<string, Chapter>,
-  realmMap: Map<string, CultivationRealm>
-): { realm: CultivationRealm | null; chapter: Chapter | null } {
+  realms: CultivationRealm[]
+): {
+  major: CultivationRealm | null;
+  sub: CultivationSubRealm | null;
+  chapter: Chapter | null;
+} {
   const usable = events
     .filter((e) => e.characterId === characterId)
     .filter((e) => chapterMap.has(e.chapterId));
-  if (!usable.length) return { realm: null, chapter: null };
+  if (!usable.length) return { major: null, sub: null, chapter: null };
 
   usable.sort((a, b) => {
     const ca = chapterMap.get(a.chapterId);
@@ -26,9 +67,12 @@ export function computeCurrentRealm(
   });
 
   const latest = usable[0];
-  const realm = realmMap.get(latest.realmId) || null;
-  const chapter = chapterMap.get(latest.chapterId) || null;
-  return { realm, chapter };
+  const resolved = findRealmById(realms, latest.realmId);
+  return {
+    major: resolved?.major ?? null,
+    sub: resolved?.sub ?? null,
+    chapter: chapterMap.get(latest.chapterId) ?? null,
+  };
 }
 
 export interface BuildRealmContextOptions {
@@ -47,17 +91,18 @@ export interface BuildRealmContextOptions {
  * Output shape (zh):
  *
  *   【修炼境界系统】（由低到高）
- *   1. 炼气期一层 — 体内有灵气流转
- *   2. 炼气期二层
- *   ...
+ *   1. 炼气期 — 体内有灵气流转
+ *      1) 一层
+ *      2) 二层 — 灵气可外放
+ *   2. 筑基期
+ *      1) 初期
  *
  *   【主要角色当前境界】（基于已写章节）
- *   - 林晓【主角】：炼气三层（于第 5 章突破）
- *   - 陈墨：筑基初期（于第 12 章突破）
+ *   - 林晓【主角】：炼气期 · 二层（于第 5 章突破）
+ *   - 陈墨：筑基期（于第 12 章突破）
  *   - 苏婉：未设定境界
  *
- * Returns an empty string when the user hasn't defined any realms yet — so
- * adding this to a prompt is always safe and zero-cost when unused.
+ * Returns an empty string when no realms exist yet.
  */
 export function buildRealmSystemContext(
   realms: CultivationRealm[],
@@ -71,42 +116,43 @@ export function buildRealmSystemContext(
   const { asOfChapterOrderIndex, ladderOnly, hideUnsetCharacters, uiLanguage = 'zh' } = options;
   const sortedRealms = [...realms].sort((a, b) => a.order - b.order);
 
-  // Section 1: ladder
   const lines: string[] = [];
   if (uiLanguage === 'en') {
     lines.push('[Cultivation Realm Ladder] (weakest → strongest)');
   } else {
     lines.push('【修炼境界系统】（由低到高）');
   }
+
   sortedRealms.forEach((r, i) => {
     const desc = r.description?.trim();
     lines.push(desc ? `${i + 1}. ${r.name} — ${desc}` : `${i + 1}. ${r.name}`);
+    const subs = [...(r.subRealms || [])].sort((a, b) => a.order - b.order);
+    subs.forEach((s, j) => {
+      const subDesc = s.description?.trim();
+      lines.push(subDesc ? `   ${j + 1}) ${s.name} — ${subDesc}` : `   ${j + 1}) ${s.name}`);
+    });
   });
 
   if (ladderOnly || characters.length === 0) {
     return lines.join('\n');
   }
 
-  // Section 2: character → current realm
   const chapterMap = new Map<string, Chapter>();
   for (const c of chapters) {
     if (asOfChapterOrderIndex == null || c.order_index <= asOfChapterOrderIndex) {
       chapterMap.set(c.id, c);
     }
   }
-  const realmMap = new Map<string, CultivationRealm>();
-  for (const r of realms) realmMap.set(r.id, r);
 
   const charLines: string[] = [];
-  // Protagonists first, then by name.
   const sortedChars = [...characters].sort((a, b) => {
     if (a.isProtagonist !== b.isProtagonist) return a.isProtagonist ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
 
   for (const char of sortedChars) {
-    const { realm, chapter } = computeCurrentRealm(char.id, events, chapterMap, realmMap);
-    if (!realm) {
+    const { major, sub, chapter } = computeCurrentRealm(char.id, events, chapterMap, realms);
+    if (!major) {
       if (hideUnsetCharacters) continue;
       if (uiLanguage === 'en') {
         charLines.push(`- ${char.name}${char.isProtagonist ? ' [protagonist]' : ''}: no realm set`);
@@ -115,12 +161,13 @@ export function buildRealmSystemContext(
       }
       continue;
     }
+    const label = sub ? `${major.name} · ${sub.name}` : major.name;
     if (uiLanguage === 'en') {
       const where = chapter ? ` (advanced in Ch.${chapter.order_index})` : '';
-      charLines.push(`- ${char.name}${char.isProtagonist ? ' [protagonist]' : ''}: ${realm.name}${where}`);
+      charLines.push(`- ${char.name}${char.isProtagonist ? ' [protagonist]' : ''}: ${label}${where}`);
     } else {
       const where = chapter ? `（于第 ${chapter.order_index} 章突破）` : '';
-      charLines.push(`- ${char.name}${char.isProtagonist ? '【主角】' : ''}：${realm.name}${where}`);
+      charLines.push(`- ${char.name}${char.isProtagonist ? '【主角】' : ''}：${label}${where}`);
     }
   }
 

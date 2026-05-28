@@ -69,11 +69,21 @@ export interface CharacterEvent {
 
 // ── Cultivation realm system (xuanhuan / xianxia) ──────────────
 
+/** 小境界（sub-realm）—— 隶属于某个大境界内部的细分等级。 */
+export interface CultivationSubRealm {
+  id: string;
+  order: number;          // 0-indexed within the parent major realm
+  name: string;
+  description?: string;
+}
+
+/** 大境界（major realm）—— 顶层修炼阶段，可包含若干小境界。 */
 export interface CultivationRealm {
   id: string;
-  order: number;          // 0-indexed; lower order = weaker realm
-  name: string;           // e.g. "炼气期一层", "筑基初期"
+  order: number;          // 0-indexed top-level order; lower = weaker
+  name: string;           // e.g. "炼气期", "筑基期"
   description?: string;   // optional flavor / required conditions
+  subRealms?: CultivationSubRealm[];
 }
 
 export interface CharacterRealmEvent {

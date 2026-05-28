@@ -6,7 +6,7 @@ import { projectApi } from '@services/api';
 import { Button } from '@components/Button';
 import {
   ArrowLeft, Sparkles, StopCircle, Save, Plus, Layers, RefreshCw,
-  ChevronDown, ChevronUp, Edit2, Trash2, GripVertical, CheckSquare, Square,
+  ChevronDown, ChevronUp, Edit2, Edit3, Trash2, GripVertical, CheckSquare, Square, Check,
 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -399,6 +399,7 @@ export function LongNovelOutlinePage() {
   const [activeTab, setActiveTab] = useState<'outline' | 'arcs' | 'world' | 'timeline'>('outline');
   const [showArcModal, setShowArcModal] = useState<{ mode: 'create' | 'edit'; arc?: PlotArc } | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [isEditingOutline, setIsEditingOutline] = useState(false);
 
   const cancelRef = useRef(false);
 
@@ -578,13 +579,15 @@ export function LongNovelOutlinePage() {
   const handleMoveArc = (arcId: string, direction: 'up' | 'down') => {
     if (!id) return;
     const idx = sortedArcs.findIndex((a) => a.id === arcId);
+    const newSorted = [...sortedArcs];
     if (direction === 'up' && idx > 0) {
-      updatePlotArc(id, sortedArcs[idx].id, { order: sortedArcs[idx - 1].order });
-      updatePlotArc(id, sortedArcs[idx - 1].id, { order: sortedArcs[idx].order });
+      [newSorted[idx], newSorted[idx - 1]] = [newSorted[idx - 1], newSorted[idx]];
     } else if (direction === 'down' && idx < sortedArcs.length - 1) {
-      updatePlotArc(id, sortedArcs[idx].id, { order: sortedArcs[idx + 1].order });
-      updatePlotArc(id, sortedArcs[idx + 1].id, { order: sortedArcs[idx].order });
+      [newSorted[idx], newSorted[idx + 1]] = [newSorted[idx + 1], newSorted[idx]];
+    } else {
+      return;
     }
+    setPlotArcs(id, newSorted.map((a, i) => ({ ...a, order: i + 1 })));
   };
 
   return (
@@ -699,6 +702,17 @@ export function LongNovelOutlinePage() {
                     <RefreshCw className="w-4 h-4 mr-2" />
                     {tx(uiLanguage, '续接生成', 'Continue')}
                   </Button>
+                  {!isEditingOutline ? (
+                    <Button onClick={() => setIsEditingOutline(true)} variant="outline">
+                      <Edit3 className="w-4 h-4 mr-2" />
+                      {tx(uiLanguage, '编辑大纲', 'Edit')}
+                    </Button>
+                  ) : (
+                    <Button onClick={() => setIsEditingOutline(false)} variant="outline" className="text-green-600 border-green-400 hover:bg-green-50 dark:hover:bg-green-900/20">
+                      <Check className="w-4 h-4 mr-2" />
+                      {tx(uiLanguage, '完成编辑', 'Done')}
+                    </Button>
+                  )}
                   <Button onClick={handleSaveClick} className="bg-green-600 hover:bg-green-700">
                     <Save className="w-4 h-4 mr-2" />
                     {isSaved ? tx(uiLanguage, '已保存 ✓', 'Saved ✓') : tx(uiLanguage, '保存大纲', 'Save Outline')}
@@ -714,18 +728,29 @@ export function LongNovelOutlinePage() {
             {error && <p className="text-sm text-red-500">{error}</p>}
           </div>
 
-          {/* Streaming output */}
+          {/* Streaming output / editor */}
           {(outline || isGenerating) && (
-            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
-              {outline ? (
-                <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{outline}</ReactMarkdown>
-                </div>
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+              {isEditingOutline ? (
+                <textarea
+                  value={outline}
+                  onChange={(e) => setOutline(e.target.value)}
+                  className="w-full h-[600px] px-6 py-5 bg-transparent text-gray-900 dark:text-gray-100 font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 rounded-xl"
+                  spellCheck={false}
+                />
               ) : (
-                <p className="text-gray-400 text-sm italic">{tx(uiLanguage, 'AI正在生成中...', 'Generating...')}</p>
-              )}
-              {isGenerating && (
-                <span className="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-1 align-middle" />
+                <div className="p-6">
+                  {outline ? (
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{outline}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="text-gray-400 text-sm italic">{tx(uiLanguage, 'AI正在生成中...', 'Generating...')}</p>
+                  )}
+                  {isGenerating && (
+                    <span className="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-1 align-middle" />
+                  )}
+                </div>
               )}
             </div>
           )}

@@ -13,19 +13,110 @@ import type {
 import {
   CheckCircle,
   Database,
+  Download,
   ExternalLink,
   Eye,
   EyeOff,
+  HardDriveDownload,
   Image,
   Key,
   Plus,
   RefreshCw,
   Trash2,
+  Upload,
   XCircle,
 } from 'lucide-react';
 import { tx } from '@utils/i18n';
 
 type Status = 'idle' | 'testing' | 'success' | 'error';
+
+// ── Backup / Restore types ────────────────────────────────────
+
+const BACKUP_VERSION = 1;
+
+const PROJECT_MAP_FIELDS = [
+  'novelTypeByProject',
+  'plotArcsByProject',
+  'charactersByProject',
+  'worldSettingByProject',
+  'timelineByProject',
+  'longNovelOutlineByProject',
+  'characterRelationshipsByProject',
+  'characterEventsByProject',
+  'cultivationRealmsByProject',
+  'characterRealmEventsByProject',
+  'promoByChapter',
+] as const;
+
+const APP_SETTINGS_FIELDS = [
+  'textModelProfiles',
+  'activeTextModelProfileId',
+  'textModelConfig',
+  'pollinationsKey',
+  'imageEngine',
+  'comfyUIUrl',
+  'embeddingConfig',
+  'knowledgeBaseEnabled',
+  'summariesEnabled',
+  'entitiesEnabled',
+  'theme',
+  'uiLanguage',
+] as const;
+
+interface BackupBundle {
+  version: number;
+  exportedAt: string;
+  appVersion?: string;
+  data: Record<string, unknown>;
+}
+
+interface BackupSummary {
+  projectIdsInBackup: number;
+  projectIdsInStore: number;
+  projectIdsOverlap: number;
+  chapterPromosInBackup: number;
+  hasAppSettings: boolean;
+}
+
+function collectProjectIds(maps: Record<string, unknown>[]): Set<string> {
+  const ids = new Set<string>();
+  for (const m of maps) {
+    if (m && typeof m === 'object') {
+      for (const k of Object.keys(m)) ids.add(k);
+    }
+  }
+  return ids;
+}
+
+function summarizeBackup(file: BackupBundle, currentState: any): BackupSummary {
+  const inMaps = PROJECT_MAP_FIELDS
+    .filter((k) => k !== 'promoByChapter')
+    .map((k) => file.data[k] as Record<string, unknown>);
+  const curMaps = PROJECT_MAP_FIELDS
+    .filter((k) => k !== 'promoByChapter')
+    .map((k) => currentState[k] as Record<string, unknown>);
+
+  const inIds = collectProjectIds(inMaps);
+  const curIds = collectProjectIds(curMaps);
+  let overlap = 0;
+  inIds.forEach((id) => {
+    if (curIds.has(id)) overlap += 1;
+  });
+
+  const promosIn = file.data.promoByChapter
+    ? Object.keys(file.data.promoByChapter as Record<string, unknown>).length
+    : 0;
+
+  const hasAppSettings = APP_SETTINGS_FIELDS.some((k) => k in file.data);
+
+  return {
+    projectIdsInBackup: inIds.size,
+    projectIdsInStore: curIds.size,
+    projectIdsOverlap: overlap,
+    chapterPromosInBackup: promosIn,
+    hasAppSettings,
+  };
+}
 
 const CUSTOM_MODEL_DEFAULT: Pick<TextModelProfile, 'provider' | 'apiUrl' | 'model' | 'temperature'> = {
   provider: 'custom',
@@ -149,6 +240,15 @@ export function SettingsPage() {
   const [bookSummaryStatus, setBookSummaryStatus] = useState('');
   const [isBuildingChapterSummaries, setIsBuildingChapterSummaries] = useState(false);
   const [chapterSummariesProgress, setChapterSummariesProgress] = useState('');
+
+  // Backup / Restore state
+  const [backupStatus, setBackupStatus] = useState('');
+  const [importPreview, setImportPreview] = useState<{
+    file: BackupBundle;
+    fileName: string;
+    summary: BackupSummary;
+  } | null>(null);
+  const [importIncludeAppSettings, setImportIncludeAppSettings] = useState(false);
 
   useEffect(() => {
     setLocalProfiles(textModelProfiles);
@@ -496,6 +596,124 @@ export function SettingsPage() {
     } finally {
       setIsBuildingChapterSummaries(false);
     }
+  };
+
+  // ── Backup / Restore handlers ───────────────────────────────
+
+  const handleExportBackup = () => {
+    const state = useAppStore.getState() as any;
+    const data: Record<string, unknown> = {};
+    for (const k of PROJECT_MAP_FIELDS) {
+      if (state[k]) data[k] = state[k];
+    }
+    if (Array.isArray(state.folders) && state.folders.length > 0) {
+      data.folders = state.folders;
+    }
+    for (const k of APP_SETTINGS_FIELDS) {
+      if (state[k] !== undefined) data[k] = state[k];
+    }
+
+    const bundle: BackupBundle = {
+      version: BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      appVersion: '1.4.0',
+      data,
+    };
+
+    const json = JSON.stringify(bundle, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.download = `novelseek-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setBackupStatus(
+      tx(uiLanguage, '已导出到浏览器下载目录。', 'Exported to your downloads folder.')
+    );
+  };
+
+  const handleImportPickFile = () => {
+    setBackupStatus('');
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as BackupBundle;
+        if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') {
+          throw new Error('Not a valid backup file');
+        }
+        if (parsed.version !== BACKUP_VERSION) {
+          // Allow but warn — fields may have evolved
+          console.warn('[Backup] version mismatch:', parsed.version);
+        }
+        const summary = summarizeBackup(parsed, useAppStore.getState());
+        setImportPreview({ file: parsed, fileName: file.name, summary });
+        setImportIncludeAppSettings(false);
+      } catch (err) {
+        console.error('[Backup] import parse failed:', err);
+        setBackupStatus(
+          tx(uiLanguage, `导入失败：文件无法解析。${String(err)}`,
+            `Import failed: cannot parse file. ${String(err)}`)
+        );
+      }
+    };
+    input.click();
+  };
+
+  const handleConfirmImport = () => {
+    if (!importPreview) return;
+    const incoming = importPreview.file.data;
+    const state = useAppStore.getState() as any;
+    const next: Record<string, unknown> = {};
+
+    // Per-project maps: merge by key, import wins on conflict.
+    for (const k of PROJECT_MAP_FIELDS) {
+      const inc = incoming[k];
+      if (inc && typeof inc === 'object') {
+        next[k] = { ...(state[k] || {}), ...(inc as Record<string, unknown>) };
+      }
+    }
+
+    // Folders: merge by id, import wins.
+    if (Array.isArray(incoming.folders)) {
+      const map = new Map<string, unknown>();
+      for (const f of (state.folders as { id: string }[]) || []) map.set(f.id, f);
+      for (const f of incoming.folders as { id: string }[]) map.set(f.id, f);
+      next.folders = Array.from(map.values());
+    }
+
+    // App settings — only if user opted in.
+    if (importIncludeAppSettings) {
+      if (Array.isArray(incoming.textModelProfiles)) {
+        const map = new Map<string, unknown>();
+        for (const p of (state.textModelProfiles as { id: string }[]) || []) map.set(p.id, p);
+        for (const p of incoming.textModelProfiles as { id: string }[]) map.set(p.id, p);
+        next.textModelProfiles = Array.from(map.values());
+      }
+      for (const k of APP_SETTINGS_FIELDS) {
+        if (k === 'textModelProfiles') continue;
+        if (incoming[k] !== undefined) next[k] = incoming[k];
+      }
+    }
+
+    useAppStore.setState(next as any);
+
+    const merged = importPreview.summary.projectIdsInBackup;
+    setImportPreview(null);
+    setBackupStatus(
+      tx(uiLanguage,
+        `导入完成：合并了 ${merged} 个项目的元数据。${importIncludeAppSettings ? '应用设置已覆盖。' : ''}请刷新页面以确保 UI 同步。`,
+        `Import done: merged metadata for ${merged} projects.${importIncludeAppSettings ? ' App settings overwritten.' : ''} Reload the page to make sure the UI is in sync.`)
+    );
   };
 
   const buildBookSummary = async () => {
@@ -1263,10 +1481,137 @@ export function SettingsPage() {
           </div>
         </div>
 
+        {/* ── Backup / Restore ──────────────────────────────────── */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+          <div className="flex items-center space-x-2 mb-4">
+            <HardDriveDownload className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+              {tx(uiLanguage, '数据备份 / 恢复', 'Data Backup / Restore')}
+            </h2>
+          </div>
+
+          <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed mb-4">
+            {tx(uiLanguage,
+              '将所有项目的角色、剧情弧线、世界观、时间线、境界系统等元数据导出为 JSON 文件。⚠ 章节正文不在备份里（它们存在 SQLite 数据库中、由 app 自动管理）。\n建议每次发布新版本前先「导出」，安装新版后再「导入」——这样可以避免 dev / 生产构建之间数据不互通的问题。',
+              'Export all project metadata (characters, arcs, world setting, timeline, realm system, etc.) as a JSON file. ⚠ Chapter content is NOT in the backup (it lives in the SQLite DB, managed automatically).\nRecommended: export before installing a new build, import after — this avoids the dev/production webview-storage split.')}
+          </p>
+
+          <div className="flex flex-wrap gap-3">
+            <Button onClick={handleExportBackup} variant="outline" className="whitespace-nowrap">
+              <Download className="w-4 h-4 mr-2" />
+              {tx(uiLanguage, '导出全部数据', 'Export Backup')}
+            </Button>
+            <Button onClick={handleImportPickFile} variant="outline" className="whitespace-nowrap">
+              <Upload className="w-4 h-4 mr-2" />
+              {tx(uiLanguage, '从备份导入', 'Import Backup')}
+            </Button>
+          </div>
+
+          {backupStatus && (
+            <p className="text-xs text-gray-600 dark:text-gray-400 mt-3 whitespace-pre-line">
+              {backupStatus}
+            </p>
+          )}
+
+          <p className="text-xs text-amber-700 dark:text-amber-400 mt-3 leading-relaxed">
+            {tx(uiLanguage,
+              '⚠ 安全提示：导出文件包含你的 API Key 和所有项目内容。不要分享给不信任的人。',
+              '⚠ Security note: the export file contains your API keys and all project content. Do not share it with untrusted parties.')}
+          </p>
+        </div>
+
         <div className="flex justify-end">
           <Button onClick={saveSettings}>{tx(uiLanguage, '保存设置', 'Save Settings')}</Button>
         </div>
       </div>
+
+      {/* Import preview modal */}
+      {importPreview && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setImportPreview(null); }}
+        >
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Upload className="w-5 h-5 text-primary-600" />
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                {tx(uiLanguage, '确认导入', 'Confirm Import')}
+              </h3>
+            </div>
+
+            <div className="text-xs text-gray-500 dark:text-gray-400 break-all">
+              {importPreview.fileName}
+              {importPreview.file.exportedAt && (
+                <span className="ml-2 text-gray-400">
+                  ({new Date(importPreview.file.exportedAt).toLocaleString()})
+                </span>
+              )}
+            </div>
+
+            <div className="bg-gray-50 dark:bg-gray-900/40 rounded-lg p-3 text-sm space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-gray-600 dark:text-gray-400">
+                  {tx(uiLanguage, '备份中的项目数', 'Projects in backup')}
+                </span>
+                <span className="font-medium text-gray-900 dark:text-white">
+                  {importPreview.summary.projectIdsInBackup}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600 dark:text-gray-400">
+                  {tx(uiLanguage, '当前已有的项目数', 'Projects currently in app')}
+                </span>
+                <span className="font-medium text-gray-900 dark:text-white">
+                  {importPreview.summary.projectIdsInStore}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600 dark:text-gray-400">
+                  {tx(uiLanguage, '将被覆盖的项目数', 'Projects to be overwritten')}
+                </span>
+                <span className={`font-medium ${importPreview.summary.projectIdsOverlap > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-900 dark:text-white'}`}>
+                  {importPreview.summary.projectIdsOverlap}
+                </span>
+              </div>
+              {importPreview.summary.chapterPromosInBackup > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600 dark:text-gray-400">
+                    {tx(uiLanguage, '章节封面/摘要', 'Chapter promos')}
+                  </span>
+                  <span className="font-medium text-gray-900 dark:text-white">
+                    {importPreview.summary.chapterPromosInBackup}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {importPreview.summary.hasAppSettings && (
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={importIncludeAppSettings}
+                  onChange={(e) => setImportIncludeAppSettings(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-primary-500"
+                />
+                <span className="text-sm text-gray-800 dark:text-gray-200">
+                  {tx(uiLanguage,
+                    '同时覆盖应用设置（API Key、文本/图像模型配置、主题、语言、KB 开关等）',
+                    'Also overwrite app settings (API keys, model configs, theme, language, KB toggles, etc.)')}
+                </span>
+              </label>
+            )}
+
+            <div className="flex gap-2 justify-end pt-2">
+              <Button variant="outline" onClick={() => setImportPreview(null)}>
+                {tx(uiLanguage, '取消', 'Cancel')}
+              </Button>
+              <Button onClick={handleConfirmImport}>
+                {tx(uiLanguage, '确认导入', 'Confirm')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
