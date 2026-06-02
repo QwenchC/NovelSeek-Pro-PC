@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAppStore } from '@store/index';
 import { chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
+import { uiConfirm } from '@components/uiDialog';
 import { BookText } from 'lucide-react';
 import { tx } from '@utils/i18n';
 
@@ -113,13 +114,14 @@ export function BookSummaryButton({
         return;
       }
 
-      const confirmed = window.confirm(
-        tx(
+      const confirmed = await uiConfirm({
+        title: tx(uiLanguage, '生成全书摘要', 'Build book summary'),
+        message: tx(
           uiLanguage,
           `首次刷新需要先为 ${eligibleCount} 个章节生成摘要（按文本模型平台计费，约 ¥${(eligibleCount * 0.005).toFixed(2)}）。继续？`,
           `First refresh needs ${eligibleCount} chapter summaries (billed via text model, ≈ ¥${(eligibleCount * 0.005).toFixed(2)}). Continue?`
-        )
-      );
+        ),
+      });
       if (!confirmed) {
         setStatus('');
         setStatusKind('idle');

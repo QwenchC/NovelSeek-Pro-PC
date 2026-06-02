@@ -75,7 +75,7 @@ const sanitizeOutline = (raw: string): string => {
 
 export function OutlinePage() {
   const { id } = useParams<{ id: string }>();
-  const smartBack = useSmartBack(id ? `/project/${id}` : '/');
+  const smartBack = useSmartBack(id ? `/project/${id}` : '/short-novels');
   const { 
     currentProject, setCurrentProject, textModelConfig, uiLanguage,
     getCharacters, setCharacters,
@@ -507,14 +507,12 @@ export function OutlinePage() {
             `大纲已保存，${parts.join('，')}`,
             `Outline saved, ${parts.join(', ')}`
           ),
-          tx(uiLanguage, '提示', 'Notice'),
-          tx(uiLanguage, '确定', 'OK')
+          tx(uiLanguage, '提示', 'Notice')
         );
       } else {
         await alertDialog(
           tx(uiLanguage, '大纲已保存！', 'Outline saved!'),
-          tx(uiLanguage, '提示', 'Notice'),
-          tx(uiLanguage, '确定', 'OK')
+          tx(uiLanguage, '提示', 'Notice')
         );
       }
     } catch (err) {

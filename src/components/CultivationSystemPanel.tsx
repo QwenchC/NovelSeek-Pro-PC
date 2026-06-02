@@ -3,6 +3,7 @@ import {
   useAppStore, CultivationRealm, CultivationSubRealm, CharacterRealmEvent,
 } from '@store/index';
 import { Button } from '@components/Button';
+import { uiConfirm } from '@components/uiDialog';
 import type { Chapter } from '@typings/index';
 import {
   X, Mountain, Users, Plus, Trash2, ArrowUp, ArrowDown,
@@ -229,18 +230,20 @@ function RealmsTab({ uiLanguage, realms, onChange, referencedRealmIds }: RealmsT
     }));
   };
 
-  const removeMajor = (id: string) => {
+  const removeMajor = async (id: string) => {
     const realm = realms.find((r) => r.id === id);
     if (!realm) return;
     // Check whether the major OR any of its subs is referenced.
     const allIds = new Set<string>([id, ...(realm.subRealms || []).map((s) => s.id)]);
     const referenced = [...allIds].some((rid) => referencedRealmIds.has(rid));
     if (referenced) {
-      const ok = window.confirm(
-        tx(uiLanguage,
+      const ok = await uiConfirm({
+        title: tx(uiLanguage, '删除大境界', 'Delete realm'),
+        message: tx(uiLanguage,
           `大境界「${realm.name}」或其下小境界已被角色进阶事件引用。删除会让这些事件失去关联（在角色境界 Tab 显示为"已删除的境界"）。继续？`,
-          `"${realm.name}" or one of its sub-realms is referenced by character events. Deletion will leave those events dangling (shown as "deleted realm" in the Characters tab). Continue?`)
-      );
+          `"${realm.name}" or one of its sub-realms is referenced by character events. Deletion will leave those events dangling (shown as "deleted realm" in the Characters tab). Continue?`),
+        danger: true,
+      });
       if (!ok) return;
     }
     onChange(realms.filter((r) => r.id !== id));
@@ -291,16 +294,18 @@ function RealmsTab({ uiLanguage, realms, onChange, referencedRealmIds }: RealmsT
     }));
   };
 
-  const removeSub = (majorId: string, subId: string) => {
+  const removeSub = async (majorId: string, subId: string) => {
     const major = realms.find((r) => r.id === majorId);
     const sub = major?.subRealms?.find((s) => s.id === subId);
     if (!sub) return;
     if (referencedRealmIds.has(subId)) {
-      const ok = window.confirm(
-        tx(uiLanguage,
+      const ok = await uiConfirm({
+        title: tx(uiLanguage, '删除小境界', 'Delete sub-realm'),
+        message: tx(uiLanguage,
           `小境界「${sub.name}」已被角色进阶事件引用。删除会让这些事件显示为"已删除的境界"。继续？`,
-          `Sub-realm "${sub.name}" is referenced by character events. Deletion will dangle them. Continue?`)
-      );
+          `Sub-realm "${sub.name}" is referenced by character events. Deletion will dangle them. Continue?`),
+        danger: true,
+      });
       if (!ok) return;
     }
     onChange(realms.map((r) => {
@@ -562,13 +567,15 @@ function RealmsTab({ uiLanguage, realms, onChange, referencedRealmIds }: RealmsT
                   {tx(uiLanguage, '智能合并', 'Smart Merge')}
                 </Button>
                 <Button
-                  onClick={() => {
+                  onClick={async () => {
                     if (referencedRealmIds.size > 0 && realms.length > 0) {
-                      const ok = window.confirm(
-                        tx(uiLanguage,
+                      const ok = await uiConfirm({
+                        title: tx(uiLanguage, '替换全部境界', 'Replace all realms'),
+                        message: tx(uiLanguage,
                           '"替换全部" 会清掉当前所有境界。角色境界事件引用旧境界 ID 的会变成"已删除的境界"。继续？',
-                          '"Replace all" wipes current realms; old-id events become dangling. Continue?')
-                      );
+                          '"Replace all" wipes current realms; old-id events become dangling. Continue?'),
+                        danger: true,
+                      });
                       if (!ok) return;
                     }
                     applyImportReplace();

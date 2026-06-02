@@ -113,6 +113,54 @@ impl ProjectService {
             .ok_or_else(|| anyhow::anyhow!("Project not found after update"))
     }
 
+    /// Upsert a whole project from a backup. Incoming wins on conflict (mirrors Android
+    /// `importBackup`); `created_at` is preserved on an existing row.
+    pub async fn upsert(pool: &SqlitePool, input: crate::models::ImportProject) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let language = normalize_project_language(input.language.as_deref());
+        let status = input.status.unwrap_or_else(|| "draft".to_string());
+        let created_at = input.created_at.unwrap_or_else(|| now.clone());
+        let updated_at = input.updated_at.unwrap_or_else(|| now.clone());
+
+        sqlx::query(
+            r#"
+            INSERT INTO projects
+                (id, title, author, genre, description, language, target_word_count,
+                 current_word_count, status, cover_images, default_cover_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                author = excluded.author,
+                genre = excluded.genre,
+                description = excluded.description,
+                language = excluded.language,
+                target_word_count = excluded.target_word_count,
+                current_word_count = excluded.current_word_count,
+                status = excluded.status,
+                cover_images = excluded.cover_images,
+                default_cover_id = excluded.default_cover_id,
+                updated_at = excluded.updated_at
+            "#
+        )
+        .bind(&input.id)
+        .bind(&input.title)
+        .bind(&input.author)
+        .bind(&input.genre)
+        .bind(&input.description)
+        .bind(&language)
+        .bind(input.target_word_count)
+        .bind(input.current_word_count)
+        .bind(&status)
+        .bind(&input.cover_images)
+        .bind(&input.default_cover_id)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM projects WHERE id = ?")
             .bind(id)

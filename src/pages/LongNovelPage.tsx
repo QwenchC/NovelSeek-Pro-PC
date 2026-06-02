@@ -1,20 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import type { PlotArc } from '@store/index';
 import { projectApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
 import { BookSummaryButton } from '@components/BookSummaryButton';
 import { CultivationSystemPanel } from '@components/CultivationSystemPanel';
-import { AiArcGenerateModal } from '@components/AiArcGenerateModal';
+import { MoreMenu, MoreMenuItem } from '@components/MoreMenu';
+import { VolumeArcPanel } from '@components/VolumeArcPanel';
+import { uiPrompt } from '@components/uiDialog';
 import { useSmartBack } from '@utils/useSmartBack';
 import {
-  ArrowLeft, BookOpen, Layers, Users, FileText, Plus, Edit2,
-  Trash2, ChevronDown, ChevronUp, Check, Play, Sunset,
+  ArrowLeft, BookOpen, Library, Users, FileText, Plus, Edit2,
+  Trash2, Play, Sunset,
   PenLine, ScrollText, Image, FileDown, ChevronLeft, ChevronRight, Sparkles,
+  Boxes, MessageCircleQuestion, History, Headphones, ArrowUpDown, GripVertical,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
-import { formatDate, formatWordCount, confirmDialog } from '@utils/index';
+import { formatDate, formatWordCount, confirmDialog, chapterStructureLabel } from '@utils/index';
 import { tx } from '@utils/i18n';
 import type { Chapter } from '@typings/index';
 
@@ -50,23 +52,6 @@ const normalizeCoverImages = (raw: string | null | undefined, labelPrefix = '封
   } catch { return []; }
 };
 
-const ARC_STATUS_LABELS: Record<PlotArc['status'], { zh: string; en: string; color: string }> = {
-  upcoming: { zh: '未开始', en: 'Upcoming', color: 'gray' },
-  active:   { zh: '进行中', en: 'Active',    color: 'blue' },
-  ending:   { zh: '结尾阶段', en: 'Ending',  color: 'orange' },
-  completed:{ zh: '已完成', en: 'Completed', color: 'green' },
-};
-
-function arcStatusClass(status: PlotArc['status']) {
-  const map = {
-    upcoming:  'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
-    active:    'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
-    ending:    'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300',
-    completed: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
-  };
-  return map[status] || map.upcoming;
-}
-
 export function LongNovelPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -75,7 +60,7 @@ export function LongNovelPage() {
     uiLanguage,
     currentProject, setCurrentProject,
     chapters, setChapters,
-    getPlotArcs, addPlotArc, updatePlotArc, deletePlotArc,
+    getPlotArcs, getVolumes, ensureVolumes,
     cleanupRealmEventsForChapter,
     textModelConfig, pollinationsKey, imageEngine, comfyUIUrl,
   } = useAppStore();
@@ -86,13 +71,10 @@ export function LongNovelPage() {
     textModelConfig.model.trim().length > 0;
 
   const [loading, setLoading] = useState(true);
-  const [showArcModal, setShowArcModal] = useState<{ mode: 'create' | 'edit'; arc?: PlotArc } | null>(null);
-  const [expandedArcs, setExpandedArcs] = useState<Record<string, boolean>>({});
 
   // Cover modal state
   const [showCoverModal, setShowCoverModal] = useState(false);
   const [showCultivationModal, setShowCultivationModal] = useState(false);
-  const [showAiArcModal, setShowAiArcModal] = useState(false);
   const [coverImages, setCoverImages] = useState<CoverImageItem[]>([]);
   const [coverIndex, setCoverIndex] = useState(0);
   const [defaultCoverId, setDefaultCoverId] = useState<string | null>(null);
@@ -100,8 +82,19 @@ export function LongNovelPage() {
   const [coverError, setCoverError] = useState<string | null>(null);
   const [coverConfig, setCoverConfig] = useState({ model: 'zimage', style: '', width: 1080, height: 1920 });
 
+  // ── Chapter reorder (sort toggle + long-press drag) ──────────────
+  const [reorderMode, setReorderMode] = useState(false);
+  const [orderIds, setOrderIds] = useState<string[]>([]);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const orderIdsRef = useRef<string[]>([]);
+  const draggingIdRef = useRef<string | null>(null);
+  const longPressTimer = useRef<number | null>(null);
+  const pressStartY = useRef(0);
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
   const arcs = id ? getPlotArcs(id) : [];
   const activeArc = arcs.find((a) => a.status === 'active' || a.status === 'ending');
+  const volumes = id ? getVolumes(id) : [];
 
   useEffect(() => {
     if (!id) return;
@@ -109,6 +102,8 @@ export function LongNovelPage() {
       projectApi.getById(id).then(setCurrentProject),
       chapterApi.getByProject(id).then(setChapters),
     ]).finally(() => setLoading(false));
+    // Wrap legacy/imported arcs into a 副本 so the project→volume→arc→chapter structure is coherent.
+    ensureVolumes(id);
   }, [id]);
 
   // Load cover images when modal opens
@@ -193,7 +188,7 @@ export function LongNovelPage() {
   const handleRenameCover = async () => {
     const cur = coverImages[coverIndex];
     if (!cur) return;
-    const nextName = window.prompt(tx(uiLanguage, '请输入新的封面名称', 'Enter new cover name'), cur.name);
+    const nextName = await uiPrompt({ title: tx(uiLanguage, '重命名封面', 'Rename cover'), label: tx(uiLanguage, '封面名称', 'Cover name'), defaultValue: cur.name });
     if (!nextName?.trim()) return;
     const nextCovers = coverImages.map((c, i) => (i === coverIndex ? { ...c, name: nextName.trim() } : c));
     setCoverImages(nextCovers);
@@ -238,17 +233,123 @@ export function LongNovelPage() {
     setChapters(updated);
   };
 
-  const handleDeleteArc = async (arcId: string) => {
-    const confirmed = await confirmDialog(
-      tx(uiLanguage, '确定要删除这个剧情弧线吗？', 'Delete this plot arc?'),
-      tx(uiLanguage, '删除弧线', 'Delete Arc')
-    );
-    if (!confirmed || !id) return;
-    deletePlotArc(id, arcId);
+  const handleRenameChapter = async (ch: Chapter) => {
+    if (!id) return;
+    const title = await uiPrompt({
+      title: tx(uiLanguage, '章节重命名', 'Rename chapter'),
+      label: tx(uiLanguage, '章节标题', 'Chapter title'),
+      defaultValue: ch.title,
+    });
+    if (!title?.trim()) return;
+    await chapterApi.updateMeta(ch.id, { title: title.trim() });
+    setChapters(await chapterApi.getByProject(id));
   };
 
   const sortedArcs = [...arcs].sort((a, b) => a.order - b.order);
+  const sortedVolumes = [...volumes].sort((a, b) => a.order - b.order);
   const sortedChapters = [...chapters].sort((a, b) => a.order_index - b.order_index);
+
+  // Visual order while reordering; falls back to the natural sorted order otherwise.
+  const displayChapters =
+    reorderMode && orderIds.length
+      ? (orderIds.map((cid) => chapters.find((c) => c.id === cid)).filter(Boolean) as Chapter[])
+      : sortedChapters;
+
+  // Keep the working order in sync with the store whenever we're not mid-drag.
+  useEffect(() => {
+    if (reorderMode && !draggingId) {
+      const ids = [...chapters].sort((a, b) => a.order_index - b.order_index).map((c) => c.id);
+      orderIdsRef.current = ids;
+      setOrderIds(ids);
+    } else if (!reorderMode) {
+      orderIdsRef.current = [];
+      setOrderIds([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reorderMode, chapters]);
+
+  const cancelLongPress = () => {
+    if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
+  };
+
+  const startLongPress = (e: React.PointerEvent, chapterId: string) => {
+    pressStartY.current = e.clientY;
+    cancelLongPress();
+    longPressTimer.current = window.setTimeout(() => {
+      longPressTimer.current = null;
+      draggingIdRef.current = chapterId;
+      setDraggingId(chapterId);
+    }, 280);
+  };
+
+  const onRowPointerMove = (e: React.PointerEvent) => {
+    // Cancel a pending long-press if the pointer moves too far before it fires (treat as scroll).
+    if (longPressTimer.current && Math.abs(e.clientY - pressStartY.current) > 8) cancelLongPress();
+  };
+
+  const onRowPointerUp = () => {
+    if (!draggingIdRef.current) cancelLongPress();
+  };
+
+  const persistChapterOrder = async (ids: string[]) => {
+    if (!id) return;
+    // Reassign the existing order_index value-set to the new order (preserves any 0-based prologue / gaps).
+    const slots = [...chapters].map((c) => c.order_index).sort((a, b) => a - b);
+    const updates: { cid: string; order: number }[] = [];
+    ids.forEach((cid, i) => {
+      const ch = chapters.find((c) => c.id === cid);
+      if (ch && ch.order_index !== slots[i]) updates.push({ cid, order: slots[i] });
+    });
+    if (updates.length === 0) return;
+    const next = chapters.map((c) => {
+      const u = updates.find((x) => x.cid === c.id);
+      return u ? { ...c, order_index: u.order } : c;
+    });
+    setChapters(next);
+    try {
+      for (const u of updates) await chapterApi.updateMeta(u.cid, { order_index: u.order });
+    } catch {
+      chapterApi.getByProject(id).then(setChapters);
+    }
+  };
+
+  // Window-level drag tracking: reorder by pointer Y against each row's midpoint; commit on release.
+  useEffect(() => {
+    if (!draggingId) return;
+    const move = (e: PointerEvent) => {
+      const dragId = draggingIdRef.current;
+      if (!dragId) return;
+      const ids = orderIdsRef.current;
+      let target = ids.length - 1;
+      for (let i = 0; i < ids.length; i++) {
+        const el = rowRefs.current[ids[i]];
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) { target = i; break; }
+      }
+      const from = ids.indexOf(dragId);
+      if (from === -1 || from === target) return;
+      const reordered = [...ids];
+      reordered.splice(from, 1);
+      reordered.splice(target, 0, dragId);
+      orderIdsRef.current = reordered;
+      setOrderIds(reordered);
+    };
+    const up = () => {
+      cancelLongPress();
+      const dragId = draggingIdRef.current;
+      draggingIdRef.current = null;
+      setDraggingId(null);
+      if (dragId) void persistChapterOrder(orderIdsRef.current);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draggingId]);
 
   if (loading) {
     return (
@@ -271,7 +372,7 @@ export function LongNovelPage() {
   }
 
   return (
-    <div className="w-full max-w-6xl mx-auto space-y-6">
+    <div className="w-full max-w-[1700px] mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-start gap-4">
         <button
@@ -304,8 +405,8 @@ export function LongNovelPage() {
             <span>{formatDate(currentProject.updated_at)}</span>
           </div>
         </div>
-        {/* Action buttons */}
-        <div className="flex gap-2 flex-shrink-0 flex-wrap">
+        {/* Action buttons — primary visible, the rest collapsed into a 更多 menu. */}
+        <div className="flex gap-2 flex-shrink-0 flex-wrap items-center">
           <Button
             variant="outline"
             onClick={() => navigate(`/long-novel/${id}/outline`)}
@@ -322,31 +423,15 @@ export function LongNovelPage() {
             <Users className="w-4 h-4 mr-1.5" />
             {tx(uiLanguage, '角色', 'Characters')}
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => setShowCultivationModal(true)}
-            className="text-sm"
-            title={tx(uiLanguage, '修炼境界表 + 角色境界追踪', 'Cultivation realms + character realm tracker')}
-          >
-            <Sparkles className="w-4 h-4 mr-1.5 text-amber-500" />
-            {tx(uiLanguage, '境界系统', 'Realms')}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => setShowCoverModal(true)}
-            className="text-sm"
-          >
-            <Image className="w-4 h-4 mr-1.5" />
-            {tx(uiLanguage, '封面', 'Cover')}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => navigate(`/long-novel/${id}/export`)}
-            className="text-sm"
-          >
-            <FileDown className="w-4 h-4 mr-1.5" />
-            {tx(uiLanguage, '导出电子书', 'Export Ebook')}
-          </Button>
+          <MoreMenu label={tx(uiLanguage, '更多', 'More')}>
+            <MoreMenuItem icon={<Sparkles className="w-4 h-4 text-amber-500" />} label={tx(uiLanguage, '境界系统', 'Realms')} onClick={() => setShowCultivationModal(true)} />
+            <MoreMenuItem icon={<Boxes className="w-4 h-4 text-purple-500" />} label={tx(uiLanguage, '容器', 'Containers')} onClick={() => navigate(`/long-novel/${id}/containers`)} />
+            <MoreMenuItem icon={<MessageCircleQuestion className="w-4 h-4 text-blue-500" />} label={tx(uiLanguage, '问小说', 'Ask Novel')} onClick={() => navigate(`/long-novel/${id}/qa`)} />
+            <MoreMenuItem icon={<History className="w-4 h-4 text-gray-500" />} label={tx(uiLanguage, '版本历史', 'History')} onClick={() => navigate(`/long-novel/${id}/history`)} />
+            <MoreMenuItem icon={<Headphones className="w-4 h-4 text-teal-500" />} label={tx(uiLanguage, '听书', 'Listen')} onClick={() => navigate(`/long-novel/${id}/listen`)} />
+            <MoreMenuItem icon={<Image className="w-4 h-4" />} label={tx(uiLanguage, '封面', 'Cover')} onClick={() => setShowCoverModal(true)} />
+            <MoreMenuItem icon={<FileDown className="w-4 h-4" />} label={tx(uiLanguage, '导出电子书', 'Export Ebook')} onClick={() => navigate(`/long-novel/${id}/export`)} />
+          </MoreMenu>
           {id && (
             <BookSummaryButton
               projectId={id}
@@ -369,64 +454,7 @@ export function LongNovelPage() {
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Arc progress — left col (2/5) */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                <Layers className="w-4 h-4 text-purple-600" />
-                {tx(uiLanguage, '剧情弧线', 'Plot Arcs')}
-              </h2>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setShowAiArcModal(true)}
-                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 text-purple-700 dark:text-purple-300 hover:from-purple-100 hover:to-pink-100 dark:hover:from-purple-900/40 dark:hover:to-pink-900/40 transition-colors"
-                  title={tx(uiLanguage, '基于大纲 / 境界系统 AI 自动生成弧线', 'Auto-generate an arc based on outline / realm system')}
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  {tx(uiLanguage, 'AI 生成', 'AI Generate')}
-                </button>
-                <button
-                  onClick={() => setShowArcModal({ mode: 'create' })}
-                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  {tx(uiLanguage, '手动添加', 'Add Manually')}
-                </button>
-              </div>
-            </div>
-
-            {sortedArcs.length === 0 ? (
-              <div className="text-center py-6 text-sm text-gray-400">
-                <Layers className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <p>{tx(uiLanguage, '还没有剧情弧线', 'No plot arcs yet')}</p>
-                <p className="text-xs mt-1 opacity-70">
-                  {tx(uiLanguage, '在大纲页生成或手动添加', 'Generate from outline or add manually')}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {sortedArcs.map((arc, idx) => (
-                  <ArcCard
-                    key={arc.id}
-                    arc={arc}
-                    index={idx}
-                    uiLanguage={uiLanguage}
-                    expanded={!!expandedArcs[arc.id]}
-                    onToggle={() => setExpandedArcs((prev) => ({ ...prev, [arc.id]: !prev[arc.id] }))}
-                    onEdit={() => setShowArcModal({ mode: 'edit', arc })}
-                    onDelete={() => handleDeleteArc(arc.id)}
-                    onStatusChange={(status) => id && updatePlotArc(id, arc.id, { status })}
-                    onSetEndingChapters={(n) => id && updatePlotArc(id, arc.id, { status: 'ending', chaptersUntilEnd: n })}
-                    onDecrementEnding={() =>
-                      id &&
-                      updatePlotArc(id, arc.id, {
-                        chaptersUntilEnd: Math.max(0, (arc.chaptersUntilEnd ?? 1) - 1),
-                      })
-                    }
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+          {id && <VolumeArcPanel projectId={id} uiLanguage={uiLanguage} />}
 
           {/* Current arc status banner */}
           {activeArc && (
@@ -479,14 +507,37 @@ export function LongNovelPage() {
                 {tx(uiLanguage, '章节列表', 'Chapters')}
                 <span className="text-sm font-normal text-gray-500">({sortedChapters.length})</span>
               </h2>
-              <Button
-                onClick={() => navigate(`/long-novel/${id}/editor`)}
-                className="text-sm bg-purple-600 hover:bg-purple-700 py-1.5"
-              >
-                <Plus className="w-4 h-4 mr-1" />
-                {tx(uiLanguage, '写新章节', 'New Chapter')}
-              </Button>
+              <div className="flex items-center gap-2">
+                {sortedChapters.length > 1 && (
+                  <button
+                    onClick={() => setReorderMode((v) => !v)}
+                    className={`flex items-center gap-1 text-sm px-2.5 py-1.5 rounded-lg transition-colors ${
+                      reorderMode
+                        ? 'bg-purple-600 text-white hover:bg-purple-700'
+                        : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                    }`}
+                    title={tx(uiLanguage, '调整章节顺序：长按章节后上下拖动', 'Reorder chapters: long-press a chapter then drag up/down')}
+                  >
+                    <ArrowUpDown className="w-4 h-4" />
+                    {reorderMode ? tx(uiLanguage, '完成', 'Done') : tx(uiLanguage, '排序', 'Sort')}
+                  </button>
+                )}
+                <Button
+                  onClick={() => navigate(`/long-novel/${id}/editor`)}
+                  className="text-sm bg-purple-600 hover:bg-purple-700 py-1.5"
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  {tx(uiLanguage, '写新章节', 'New Chapter')}
+                </Button>
+              </div>
             </div>
+
+            {reorderMode && (
+              <p className="text-xs text-purple-500 dark:text-purple-400 mb-2 flex items-center gap-1">
+                <GripVertical className="w-3 h-3" />
+                {tx(uiLanguage, '长按某一章后上下拖动到目标位置，松开即保存。', 'Long-press a chapter, drag up/down to the target spot, release to save.')}
+              </p>
+            )}
 
             {sortedChapters.length === 0 ? (
               <div className="text-center py-10 text-sm text-gray-400">
@@ -497,14 +548,22 @@ export function LongNovelPage() {
                 </p>
               </div>
             ) : (
-              <div className="space-y-1 max-h-[600px] overflow-y-auto pr-1">
-                {sortedChapters.map((chapter) => (
+              <div className="space-y-1 max-h-[calc(100vh-15rem)] overflow-y-auto pr-1">
+                {displayChapters.map((chapter) => (
                   <ChapterRow
                     key={chapter.id}
                     chapter={chapter}
                     uiLanguage={uiLanguage}
+                    structure={chapterStructureLabel(chapter.id, chapter.arc_id, sortedArcs, sortedVolumes)}
                     onEdit={() => navigate(`/long-novel/${id}/editor/${chapter.id}`)}
+                    onRename={() => handleRenameChapter(chapter)}
                     onDelete={() => handleDeleteChapter(chapter.id)}
+                    reorderMode={reorderMode}
+                    isDragging={draggingId === chapter.id}
+                    registerRef={(el) => { rowRefs.current[chapter.id] = el; }}
+                    onReorderPointerDown={(e) => startLongPress(e, chapter.id)}
+                    onReorderPointerMove={onRowPointerMove}
+                    onReorderPointerUp={onRowPointerUp}
                   />
                 ))}
               </div>
@@ -518,45 +577,6 @@ export function LongNovelPage() {
           projectId={id}
           chapters={sortedChapters}
           onClose={() => setShowCultivationModal(false)}
-        />
-      )}
-
-      {showAiArcModal && id && currentProject && (
-        <AiArcGenerateModal
-          projectId={id}
-          projectTitle={currentProject.title}
-          projectDescription={currentProject.description}
-          chapters={sortedChapters}
-          onAccept={(data) => {
-            addPlotArc(id, {
-              title: data.title,
-              summary: data.summary,
-              order: arcs.length,
-              status: 'upcoming',
-              chapterCount: data.chapterCount,
-              miniOutline: data.miniOutline,
-            });
-            setShowAiArcModal(false);
-          }}
-          onClose={() => setShowAiArcModal(false)}
-        />
-      )}
-
-      {showArcModal && id && (
-        <ArcEditModal
-          mode={showArcModal.mode}
-          arc={showArcModal.arc}
-          nextOrder={arcs.length + 1}
-          uiLanguage={uiLanguage}
-          onClose={() => setShowArcModal(null)}
-          onSave={(data) => {
-            if (showArcModal.mode === 'create') {
-              addPlotArc(id, data);
-            } else if (showArcModal.arc) {
-              updatePlotArc(id, showArcModal.arc.id, data);
-            }
-            setShowArcModal(null);
-          }}
         />
       )}
 
@@ -632,152 +652,41 @@ export function LongNovelPage() {
   );
 }
 
-// ── Arc Card ────────────────────────────────────────────────────
-function ArcCard({
-  arc, index, uiLanguage, expanded, onToggle, onEdit, onDelete,
-  onStatusChange, onSetEndingChapters, onDecrementEnding: _onDecrementEnding,
-}: {
-  arc: PlotArc;
-  index: number;
-  uiLanguage: 'zh' | 'en';
-  expanded: boolean;
-  onToggle: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onStatusChange: (s: PlotArc['status']) => void;
-  onSetEndingChapters: (n: number) => void;
-  onDecrementEnding: () => void;
-}) {
-  const [endingInput, setEndingInput] = useState('3');
-  const [showEndingForm, setShowEndingForm] = useState(false);
-  const info = ARC_STATUS_LABELS[arc.status];
-
-  return (
-    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-      <div
-        className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${
-          arc.status === 'active' ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''
-        } ${arc.status === 'ending' ? 'bg-orange-50/50 dark:bg-orange-900/10' : ''}`}
-        onClick={onToggle}
-      >
-        <div
-          className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-            arc.status === 'completed'
-              ? 'bg-green-500 text-white'
-              : arc.status === 'active' || arc.status === 'ending'
-              ? 'bg-purple-600 text-white'
-              : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'
-          }`}
-        >
-          {arc.status === 'completed' ? <Check className="w-3 h-3" /> : index + 1}
-        </div>
-        <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate block">
-            {arc.title}
-          </span>
-        </div>
-        <span className={`text-xs px-1.5 py-0.5 rounded-full flex-shrink-0 ${arcStatusClass(arc.status)}`}>
-          {uiLanguage === 'zh' ? info.zh : info.en}
-        </span>
-        {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-      </div>
-
-      {expanded && (
-        <div className="px-3 pb-3 space-y-2 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 pt-2">
-          {arc.summary && (
-            <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-              {arc.summary}
-            </p>
-          )}
-          {arc.status === 'active' && (
-            <>
-              {!showEndingForm ? (
-                <button
-                  onClick={() => setShowEndingForm(true)}
-                  className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 dark:bg-orange-900/20 dark:text-orange-400 hover:bg-orange-200 dark:hover:bg-orange-900/40 transition-colors w-full justify-center"
-                >
-                  <Sunset className="w-3.5 h-3.5" />
-                  {tx(uiLanguage, '开始结束本段剧情', 'Start ending this arc')}
-                </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-600 dark:text-gray-400">
-                    {tx(uiLanguage, '预计还需几章结束？', 'How many chapters to end?')}
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={endingInput}
-                    onChange={(e) => setEndingInput(e.target.value)}
-                    className="w-14 px-1.5 py-1 text-xs border rounded dark:bg-gray-700 dark:border-gray-600"
-                  />
-                  <button
-                    onClick={() => { onSetEndingChapters(parseInt(endingInput, 10) || 3); setShowEndingForm(false); }}
-                    className="text-xs px-2 py-1 rounded bg-orange-500 text-white hover:bg-orange-600 transition-colors"
-                  >
-                    {tx(uiLanguage, '确认', 'OK')}
-                  </button>
-                  <button
-                    onClick={() => setShowEndingForm(false)}
-                    className="text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-300 transition-colors"
-                  >
-                    {tx(uiLanguage, '取消', 'Cancel')}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          {arc.status === 'ending' && (
-            <div className="flex items-center gap-2 text-xs text-orange-700 dark:text-orange-400">
-              <Sunset className="w-3.5 h-3.5" />
-              <span>
-                {tx(uiLanguage, `结尾倒计时：${arc.chaptersUntilEnd ?? '?'} 章`, `Ending countdown: ${arc.chaptersUntilEnd ?? '?'} chapters`)}
-              </span>
-            </div>
-          )}
-          {arc.status === 'ending' && (
-            <button
-              onClick={() => onStatusChange('completed')}
-              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400 hover:bg-green-200 transition-colors w-full justify-center"
-            >
-              <Check className="w-3.5 h-3.5" />
-              {tx(uiLanguage, '标记为已完成', 'Mark as completed')}
-            </button>
-          )}
-          <div className="flex gap-2 pt-1">
-            <button
-              onClick={onEdit}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-primary-600 transition-colors"
-            >
-              <Edit2 className="w-3 h-3" />
-              {tx(uiLanguage, '编辑', 'Edit')}
-            </button>
-            <button
-              onClick={onDelete}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-red-600 transition-colors"
-            >
-              <Trash2 className="w-3 h-3" />
-              {tx(uiLanguage, '删除', 'Delete')}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Chapter Row ────────────────────────────────────────────────
 function ChapterRow({
-  chapter, uiLanguage, onEdit, onDelete,
+  chapter, uiLanguage, structure, onEdit, onRename, onDelete,
+  reorderMode = false, isDragging = false, registerRef,
+  onReorderPointerDown, onReorderPointerMove, onReorderPointerUp,
 }: {
   chapter: Chapter;
   uiLanguage: 'zh' | 'en';
+  structure: { volume: string | null; arc: string | null };
   onEdit: () => void;
+  onRename: () => void;
   onDelete: () => void;
+  reorderMode?: boolean;
+  isDragging?: boolean;
+  registerRef?: (el: HTMLDivElement | null) => void;
+  onReorderPointerDown?: (e: React.PointerEvent) => void;
+  onReorderPointerMove?: (e: React.PointerEvent) => void;
+  onReorderPointerUp?: (e: React.PointerEvent) => void;
 }) {
   return (
-    <div className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer" onClick={onEdit}>
+    <div
+      ref={registerRef}
+      className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+        reorderMode
+          ? `select-none touch-none ${isDragging
+              ? 'bg-purple-100 dark:bg-purple-900/40 shadow-lg ring-2 ring-purple-400 cursor-grabbing'
+              : 'bg-gray-50/70 dark:bg-gray-700/30 cursor-grab hover:bg-gray-100 dark:hover:bg-gray-700/50'}`
+          : 'hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer'
+      }`}
+      onClick={reorderMode ? undefined : onEdit}
+      onPointerDown={reorderMode ? onReorderPointerDown : undefined}
+      onPointerMove={reorderMode ? onReorderPointerMove : undefined}
+      onPointerUp={reorderMode ? onReorderPointerUp : undefined}
+    >
+      {reorderMode && <GripVertical className="w-4 h-4 text-gray-400 flex-shrink-0" />}
       <span className="text-xs text-gray-400 w-5 text-center flex-shrink-0">
         {chapter.order_index}
       </span>
@@ -785,6 +694,12 @@ function ChapterRow({
         <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
           {chapter.title}
         </p>
+        {(structure.volume || structure.arc) && (
+          <p className="text-xs text-purple-500 dark:text-purple-400 truncate flex items-center gap-1">
+            <Library className="w-3 h-3 flex-shrink-0" />
+            {[structure.volume, structure.arc].filter(Boolean).join(' · ')}
+          </p>
+        )}
         {chapter.outline_goal && (
           <p className="text-xs text-gray-500 truncate">{chapter.outline_goal}</p>
         )}
@@ -803,125 +718,24 @@ function ChapterRow({
       >
         {chapter.status === 'final' ? tx(uiLanguage, '完成', 'Final') : chapter.status === 'review' ? tx(uiLanguage, '审阅', 'Review') : tx(uiLanguage, '草稿', 'Draft')}
       </span>
-      <button
-        onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 transition-all flex-shrink-0"
-      >
-        <Trash2 className="w-3.5 h-3.5" />
-      </button>
-    </div>
-  );
-}
-
-// ── Arc Edit Modal ─────────────────────────────────────────────
-function ArcEditModal({
-  mode, arc, nextOrder, uiLanguage, onClose, onSave,
-}: {
-  mode: 'create' | 'edit';
-  arc?: PlotArc;
-  nextOrder: number;
-  uiLanguage: 'zh' | 'en';
-  onClose: () => void;
-  onSave: (data: Omit<PlotArc, 'id'>) => void;
-}) {
-  const [title, setTitle] = useState(arc?.title ?? '');
-  const [summary, setSummary] = useState(arc?.summary ?? '');
-  const [status, setStatus] = useState<PlotArc['status']>(arc?.status ?? 'upcoming');
-  const [miniOutline, setMiniOutline] = useState(arc?.miniOutline ?? '');
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-          {mode === 'create'
-            ? tx(uiLanguage, '添加剧情弧线', 'Add Plot Arc')
-            : tx(uiLanguage, '编辑剧情弧线', 'Edit Plot Arc')}
-        </h3>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {tx(uiLanguage, '弧线名称 *', 'Arc Title *')}
-            </label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
-              placeholder={tx(uiLanguage, '例如：初入江湖、伏笔揭晓、终极决战', 'e.g. Prologue Arc, Revelation Arc, Climax Arc')}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {tx(uiLanguage, '剧情概述', 'Arc Summary')}
-            </label>
-            <textarea
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-24 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
-              placeholder={tx(uiLanguage, '简要描述这段剧情的核心内容、目的和结局...', 'Briefly describe the core content, purpose, and outcome of this arc...')}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {tx(uiLanguage, '状态', 'Status')}
-            </label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value as PlotArc['status'])}
-              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              {(Object.keys(ARC_STATUS_LABELS) as PlotArc['status'][]).map((s) => (
-                <option key={s} value={s}>
-                  {uiLanguage === 'zh' ? ARC_STATUS_LABELS[s].zh : ARC_STATUS_LABELS[s].en}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              {tx(uiLanguage, '弧线小纲（可选）', 'Arc Mini-Outline (Optional)')}
-            </label>
-            <textarea
-              value={miniOutline}
-              onChange={(e) => setMiniOutline(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-40 resize-y font-mono text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-purple-500"
-              spellCheck={false}
-              placeholder={tx(uiLanguage,
-                '格式：第1章：标题 — 目标\\n第2章：标题 — 目标\\n…\\n（在编辑器里"构建空白章节"会按此创建。）',
-                'Format: Chapter 1: Title — Goal\\nChapter 2: Title — Goal\\n...\\n("Build chapters" in the editor uses this.)')}
-            />
-          </div>
-        </div>
-        <div className="flex gap-3 mt-6">
-          <Button variant="outline" onClick={onClose} className="flex-1">
-            {tx(uiLanguage, '取消', 'Cancel')}
-          </Button>
-          <Button
-            onClick={() => {
-              if (!title.trim()) return;
-              onSave({
-                title: title.trim(),
-                summary: summary.trim(),
-                order: arc?.order ?? nextOrder,
-                status,
-                chaptersUntilEnd: arc?.chaptersUntilEnd,
-                chapterCount: arc?.chapterCount ?? 0,
-                // Preserve mini-outline + built chapter linkage on edit.
-                // (Previously the manual edit dropped these fields.)
-                miniOutline: miniOutline.trim() || undefined,
-                builtChapterIds: arc?.builtChapterIds,
-              });
-            }}
-            className="flex-1 bg-purple-600 hover:bg-purple-700"
-            disabled={!title.trim()}
+      {!reorderMode && (
+        <>
+          <button
+            onClick={(e) => { e.stopPropagation(); onRename(); }}
+            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 text-blue-500 transition-all flex-shrink-0"
+            title={tx(uiLanguage, '重命名', 'Rename')}
           >
-            {tx(uiLanguage, '保存', 'Save')}
-          </Button>
-        </div>
-      </div>
+            <Edit2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 transition-all flex-shrink-0"
+            title={tx(uiLanguage, '删除', 'Delete')}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </>
+      )}
     </div>
   );
 }

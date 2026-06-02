@@ -1,4 +1,4 @@
-# 🎉 NovelSeek Pro - 项目已成功创建！
+# 🎉 NovelSeek Ultra - 项目已成功创建！
 
 ## ✅ 已完成的功能
 
@@ -78,7 +78,7 @@
 
 ```bash
 # 确保你在项目目录
-cd e:\programs\NovelSeek-Pro-PC
+cd e:\Lumi\NovelSeek-Ultra-PC
 
 # 启动开发服务器
 npm run tauri:dev

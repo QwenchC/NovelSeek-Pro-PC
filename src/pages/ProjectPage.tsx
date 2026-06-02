@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
+import { uiAlert } from '@components/uiDialog';
 import { ArrowLeft, Plus, Edit, Sparkles, Users, ChevronDown, ChevronUp, Trash2, Image, ChevronLeft, ChevronRight, FileDown, BookOpen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -82,8 +83,10 @@ const normalizeCoverImages = (raw: string | null | undefined, coverLabelPrefix =
 export function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const smartBack = useSmartBack('/');
+  const smartBack = useSmartBack('/short-novels');
   const { currentProject, setCurrentProject, chapters, setChapters, textModelConfig, pollinationsKey, imageEngine, comfyUIUrl, uiLanguage, setNovelType } = useAppStore();
+  // In-app, centered notice dialog (replaces browser-native alert popups).
+  const notify = (message: string) => { void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message }); };
   const hasValidTextConfig = useMemo(
     () =>
       textModelConfig.apiKey.trim().length > 0 &&
@@ -261,27 +264,27 @@ export function ProjectPage() {
       if (id) loadChapters(id);
     } catch (error) {
       console.error('Failed to delete chapter:', error);
-      alert(tx(uiLanguage, '删除章节失败', 'Failed to delete chapter'));
+      notify(tx(uiLanguage, '删除章节失败', 'Failed to delete chapter'));
     }
   };
 
   const handleGeneratePrologue = async () => {
     if (!currentProject) return;
     if (!currentProject.description || !currentProject.description.trim()) {
-      alert(tx(uiLanguage, '请先生成小说大纲', 'Please generate a novel outline first'));
+      notify(tx(uiLanguage, '请先生成小说大纲', 'Please generate a novel outline first'));
       return;
     }
     if (!hasValidTextConfig) {
-      alert(tx(uiLanguage, '请先在设置中配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
+      notify(tx(uiLanguage, '请先在设置中配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'));
       return;
     }
     if (chapters.some(ch => ch.title.trim() === '序章')) {
-      alert(tx(uiLanguage, '序章已存在', 'Prologue already exists'));
+      notify(tx(uiLanguage, '序章已存在', 'Prologue already exists'));
       return;
     }
 
     if (chapters.some(ch => ch.order_index === 0)) {
-      alert(tx(uiLanguage, '序章已存在', 'Prologue already exists'));
+      notify(tx(uiLanguage, '序章已存在', 'Prologue already exists'));
       return;
     }
     setIsGeneratingPrologue(true);
@@ -310,7 +313,7 @@ export function ProjectPage() {
         typeof error === 'string'
           ? error
           : (error as Error)?.message || tx(uiLanguage, '序章生成失败', 'Failed to generate prologue');
-      alert(message);
+      notify(message);
     } finally {
       setIsGeneratingPrologue(false);
     }
@@ -920,7 +923,7 @@ function EditProjectModal({ project, onClose, onSuccess }: EditProjectModalProps
       onSuccess();
     } catch (error) {
       console.error('Failed to update project:', error);
-      alert(tx(uiLanguage, '更新项目失败', 'Failed to update project'));
+      void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message: tx(uiLanguage, '更新项目失败', 'Failed to update project') });
     } finally {
       setLoading(false);
     }
@@ -1030,8 +1033,7 @@ function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps)
     ) {
       await alertDialog(
         tx(uiLanguage, '请先在设置页面配置 DeepSeek API 密钥', 'Configure text model API key in Settings first'),
-        tx(uiLanguage, '提示', 'Notice'),
-        tx(uiLanguage, '确定', 'OK')
+        tx(uiLanguage, '提示', 'Notice')
       );
       return;
     }
@@ -1040,8 +1042,7 @@ function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps)
     if (!currentProject) {
       await alertDialog(
         tx(uiLanguage, '未找到项目信息', 'Project not found'),
-        tx(uiLanguage, '提示', 'Notice'),
-        tx(uiLanguage, '确定', 'OK')
+        tx(uiLanguage, '提示', 'Notice')
       );
       return;
     }
@@ -1063,8 +1064,7 @@ function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps)
       console.log('大纲生成成功:', result);
       await alertDialog(
         tx(uiLanguage, '大纲生成成功！', 'Outline generated successfully!'),
-        tx(uiLanguage, '提示', 'Notice'),
-        tx(uiLanguage, '确定', 'OK')
+        tx(uiLanguage, '提示', 'Notice')
       );
       onSuccess();
     } catch (error) {
@@ -1075,8 +1075,7 @@ function GenerateOutlineModal({ onClose, onSuccess }: GenerateOutlineModalProps)
           : (error as Error)?.message || tx(uiLanguage, '未知错误', 'Unknown error');
       await alertDialog(
         `${tx(uiLanguage, '生成大纲失败', 'Failed to generate outline')}: ${errorMessage}`,
-        tx(uiLanguage, '提示', 'Notice'),
-        tx(uiLanguage, '确定', 'OK')
+        tx(uiLanguage, '提示', 'Notice')
       );
     } finally {
       setLoading(false);
@@ -1173,11 +1172,12 @@ function CreateChapterModal({ projectId, nextOrderIndex, onClose, onSuccess }: C
       onSuccess();
     } catch (error) {
       console.error('Failed to create chapter:', error);
-      alert(
-        `${tx(uiLanguage, '创建章节失败', 'Failed to create chapter')}: ${
+      void uiAlert({
+        title: tx(uiLanguage, '提示', 'Notice'),
+        message: `${tx(uiLanguage, '创建章节失败', 'Failed to create chapter')}: ${
           (error as Error)?.message || tx(uiLanguage, '未知错误', 'Unknown error')
-        }`
-      );
+        }`,
+      });
     } finally {
       setLoading(false);
     }

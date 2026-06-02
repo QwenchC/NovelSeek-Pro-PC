@@ -1,6 +1,7 @@
 import { ReactNode, useEffect } from 'react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
+import { DialogHost } from './uiDialog';
 import { useAppStore } from '@store/index';
 import { cn } from '@utils/index';
 
@@ -33,6 +34,7 @@ export function Layout({ children }: LayoutProps) {
           {children}
         </main>
       </div>
+      <DialogHost />
     </div>
   );
 }

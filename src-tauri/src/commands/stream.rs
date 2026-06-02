@@ -491,6 +491,10 @@ async fn stream_generate(
 
     let mut full_content = String::new();
     let mut stream = response.bytes_stream();
+    // Buffer raw bytes and only process COMPLETE newline-terminated SSE lines. A `data:` line (or a
+    // multi-byte UTF-8 char) can be split across network chunks; processing per-chunk would drop
+    // that delta and corrupt the output (missing chars / mangled CJK). Buffering fixes that.
+    let mut byte_buf: Vec<u8> = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
@@ -498,15 +502,15 @@ async fn stream_generate(
         }
 
         let chunk = chunk_result.map_err(|e| format!("读取流失败: {}", e))?;
-        let chunk_str = String::from_utf8_lossy(&chunk);
+        byte_buf.extend_from_slice(&chunk);
 
-        for line in chunk_str.lines() {
-            if line.starts_with("data: ") {
-                let data = &line[6..];
-                if data == "[DONE]" {
-                    continue;
-                }
-
+        // Drain every complete line (up to and including each '\n'); keep the trailing partial line.
+        while let Some(nl) = byte_buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = byte_buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" { continue; }
                 if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(data) {
                     if let Some(choice) = stream_response.choices.first() {
                         if let Some(content) = &choice.delta.content {
@@ -798,19 +802,21 @@ pub async fn generate_characters_from_outline_stream(
     let client = Client::new();
     let output_language = normalize_output_language(outputLanguage.as_deref());
 
+    // Rich, detailed JSON profiles (ported from the Android app's charsFromOutline prompts) — far
+    // more thorough than the old terse pipe format. The frontend parses JSON first (pipe fallback).
     let (system_prompt, user_prompt) = if output_language == "en" {
         (
-            "You are a story analyst. Extract all named characters from the story outline and output them in strict pipe-delimited format. Output ONLY data lines — no headers, no numbers, no explanations.".to_string(),
+            "You are a professional novel character analyst. Extract ALL major and secondary characters from the provided outline. For each character, create a COMPREHENSIVE and DETAILED profile — do not summarize, be thorough. Output ONLY a valid JSON array with no markdown, no code fences, no explanation before or after:\n[\n  {\n    \"name\": \"Full character name\",\n    \"gender\": \"male / female / unknown\",\n    \"isProtagonist\": true or false,\n    \"role\": \"Role/title in the story (e.g. protagonist, main antagonist, mentor, rival...)\",\n    \"personality\": \"Detailed personality traits, behavioral tendencies, strengths and flaws\",\n    \"motivation\": \"Core desires, goals, driving forces, and what they fear or want to avoid\",\n    \"background\": \"Detailed backstory: origin, family, past events that shaped them\",\n    \"appearance\": \"Physical description: build, features, clothing style, distinguishing marks\"\n  }\n]".to_string(),
             format!(
-                "Extract all named characters from the following novel outline.\n\n{}\n\nOutput format (one character per line):\nCharacter Name | Gender | Role/Occupation | Personality Traits | Core Motivation | Background Summary\n\nRules:\n- Only include actual characters (people/beings with names), NOT places, arc titles, themes, or concepts\n- Keep each field concise (10-20 words max)\n- Leave a field empty if unknown, do NOT invent\n- Output ONLY data lines, absolutely no headers, numbering, or explanations",
+                "Novel outline:\n\n{}\n\nNow output the complete JSON character array. Be thorough — each field must be detailed, not just a brief phrase. Only include actual named characters (people/beings), NOT places, arc titles, themes, or concepts.",
                 outline
             ),
         )
     } else {
         (
-            "你是一位故事分析师。从故事大纲中提取所有命名角色并以严格的竖线分隔格式输出。只输出数据行，不要标题、序号或任何说明。".to_string(),
+            "你是专业的小说角色分析师。请从提供的大纲中提取所有主要角色与重要配角。对每个角色，请创建详尽完整的角色档案——不要简略概括，要详细展开。请只输出合法 JSON 数组，不要加任何 markdown、代码块标记、前置说明或结尾说明：\n[\n  {\n    \"name\": \"角色全名\",\n    \"gender\": \"男 / 女 / 未知\",\n    \"isProtagonist\": true 或 false,\n    \"role\": \"角色在故事中的身份定位（如主角、主要反派、导师、对手……）\",\n    \"personality\": \"详细的性格特点、行为倾向、优点与缺陷\",\n    \"motivation\": \"核心欲望、目标、驱动力，以及他们恐惧或想要避免的事\",\n    \"background\": \"详细背景故事：出身、家庭、塑造其性格的过去经历\",\n    \"appearance\": \"外貌描述：体型、五官特征、着装风格、显著标志\"\n  }\n]".to_string(),
             format!(
-                "从以下长篇小说大纲中提取所有命名角色：\n\n{}\n\n输出格式（每行一个角色）：\n角色名 | 性别 | 身份/职位 | 性格特点 | 核心动机 | 背景简述\n\n【严格要求】\n- 只提取真实的角色（有名字的人物/生命体），绝对不要地点、弧线名称、主题概念等\n- 每个字段简洁（10-20字以内）\n- 未提及的字段留空，不要编造\n- 只输出数据行，不要任何标题、序号或说明文字",
+                "小说大纲：\n\n{}\n\n请现在输出完整的 JSON 角色数组。每个字段都要详尽，不能只写简短的词语或短语。只提取真实的命名角色（有名字的人物/生命体），不要地点、弧线名称、主题概念等。",
                 outline
             ),
         )
@@ -818,7 +824,7 @@ pub async fn generate_characters_from_outline_stream(
 
     let full_content = stream_generate(
         &client, &window, &textConfig, &system_prompt, &user_prompt,
-        "characters-from-outline-stream", 2000, 0.5,
+        "characters-from-outline-stream", 8000, 0.6,
     ).await?;
     Ok(full_content)
 }
@@ -1287,6 +1293,7 @@ Hard constraints:
 3. Follow character bible exactly.
 4. Keep continuity with previous content when provided.
 5. Output plain English prose only (no Markdown).
+6. Do NOT output the chapter title, chapter number, "Chapter N", or any heading/label line. Write ONLY the body prose, starting directly from the first sentence of the story.
 
 Style:
 - concrete details over vague abstraction
@@ -1307,6 +1314,7 @@ Style:
 3. 注重场景描写和画面感
 4. 对话要符合人物口吻和性格设定
 5. 保持叙述节奏，张弛有度
+6. 绝不输出章节标题、序号、"第X章""标题："等任何标题或标签行，直接从正文第一句开始写，只输出正文本身
 
 写作风格：
 - 避免AI痕迹（减少"然而"、"不禁"、"心中暗想"等词汇）
@@ -1343,6 +1351,8 @@ Style:
 
     let mut full_content = String::new();
     let mut stream = response.bytes_stream();
+    // Buffer raw bytes; only process complete newline-terminated SSE lines (see stream_generate).
+    let mut byte_buf: Vec<u8> = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
@@ -1350,15 +1360,14 @@ Style:
         }
 
         let chunk = chunk_result.map_err(|e| format!("读取流失败: {}", e))?;
-        let chunk_str = String::from_utf8_lossy(&chunk);
+        byte_buf.extend_from_slice(&chunk);
 
-        for line in chunk_str.lines() {
-            if line.starts_with("data: ") {
-                let data = &line[6..];
-                if data == "[DONE]" {
-                    continue;
-                }
-
+        while let Some(nl) = byte_buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = byte_buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" { continue; }
                 if let Ok(stream_response) = serde_json::from_str::<StreamResponse>(data) {
                     if let Some(choice) = stream_response.choices.first() {
                         if let Some(content) = &choice.delta.content {

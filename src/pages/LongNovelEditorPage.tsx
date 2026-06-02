@@ -4,16 +4,20 @@ import { useAppStore } from '@store/index';
 import type { PlotArc } from '@store/index';
 import { chapterApi, knowledgeApi } from '@services/api';
 import { Button } from '@components/Button';
-import { BookSummaryButton } from '@components/BookSummaryButton';
 import { CultivationSystemPanel } from '@components/CultivationSystemPanel';
+import { MoreMenu, MoreMenuItem } from '@components/MoreMenu';
+import { VolumeArcPanel } from '@components/VolumeArcPanel';
+import { uiPrompt, uiConfirm } from '@components/uiDialog';
+import { chapterStructureLabel, stripChapterHeading } from '@utils/index';
 import { useSmartBack } from '@utils/useSmartBack';
 import { buildRealmSystemContext } from '@utils/cultivation';
+import { buildGenerationGuidance, runChapterAutoUpdates } from '@utils/containerAi';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  ArrowLeft, Save, Sparkles, StopCircle, Plus, Layers,
+  ArrowLeft, Save, Sparkles, StopCircle, Plus, Layers, Boxes,
   Play, Sunset, Check, ChevronDown, ChevronUp, BookOpen,
-  RefreshCw, AlertTriangle, X, Wand2, FileText, Lock, Image, Loader2,
+  RefreshCw, AlertTriangle, X, Wand2, FileText, Image, Loader2, Edit2,
 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -144,13 +148,14 @@ export function LongNovelEditorPage() {
   const {
     textModelConfig, uiLanguage,
     getCharacters, getWorldSetting, getTimeline,
-    getPlotArcs, updatePlotArc,
+    getPlotArcs, updatePlotArc, getVolumes,
     getLongNovelOutline, projects,
     pollinationsKey, imageEngine, comfyUIUrl,
     getPromo, setPromo,
     knowledgeBaseEnabled, embeddingConfig,
     summariesEnabled, entitiesEnabled,
     getCultivationRealms, getCharacterRealmEvents,
+    chaptersVersion,
   } = useAppStore();
 
   const hasValidEmbeddingConfig = useMemo(
@@ -183,9 +188,14 @@ export function LongNovelEditorPage() {
   const [newTitle, setNewTitle] = useState('');
   const [newGoal, setNewGoal] = useState('');
   const [newConflict, setNewConflict] = useState('');
+  // Which arc the new chapter belongs to ('' = global end / unassigned). New chapter is inserted
+  // right AFTER this arc's current last chapter.
+  const [newChapterArcId, setNewChapterArcId] = useState('');
 
   // Arc panel
   const [arcPanelOpen, setArcPanelOpen] = useState(true);
+  // Chapter planning panel (本章目标 / 核心冲突) for the current chapter
+  const [showPlanning, setShowPlanning] = useState(false);
 
   // Arc mini-outline generation
   const [arcMiniOutlineText, setArcMiniOutlineText] = useState('');
@@ -194,8 +204,8 @@ export function LongNovelEditorPage() {
   const arcMiniOutlineTextRef = useRef('');
   // IDs of chapters created by the most recent handleBuildArcChapters call
   const [arcBuiltChapterIds, setArcBuiltChapterIds] = useState<string[]>([]);
-  // Chapter count input (used in arc activation form and mini-outline section)
-  const [arcChapterCountInput, setArcChapterCountInput] = useState('8');
+  // Default chapter count for the arc mini-outline build (the activation form was removed).
+  const arcChapterCountInput = '8';
 
   // AI助填
   const [showAiFillDialog, setShowAiFillDialog] = useState(false);
@@ -207,8 +217,6 @@ export function LongNovelEditorPage() {
 
   // Arc detail
   const [arcDetailOpen, setArcDetailOpen] = useState(false);
-  // Arc list expand (for 'upcoming' arc activation)
-  const [expandedArcId, setExpandedArcId] = useState<string | null>(null);
 
   // Promo (chapter cover / 推文)
   const [promoResult, setPromoResult] = useState<PromoResult | null>(null);
@@ -238,13 +246,11 @@ export function LongNovelEditorPage() {
   const cancelRef = useRef(false);
 
   const arcs = id ? getPlotArcs(id) : [];
+  const volumes = id ? getVolumes(id) : [];
   const activeArc = arcs.find((a) => a.status === 'active' || a.status === 'ending');
   const sortedArcs = [...arcs].sort((a, b) => a.order - b.order);
-  // The first upcoming arc by order is activatable only when no arc is active/ending
-  const nextActivatableArc = !activeArc ? sortedArcs.find((a) => a.status === 'upcoming') : undefined;
   const currentProjectMeta = projects.find((p) => p.id === id);
   const projectTitle = currentProjectMeta?.title || '';
-  const projectDescription = currentProjectMeta?.description || '';
 
   const paragraphs = useMemo(() => {
     const normalized = content.replace(/\r\n/g, '\n').trim();
@@ -320,9 +326,26 @@ export function LongNovelEditorPage() {
     });
   }, [id, chapterId]);
 
-  const handleSelectChapter = (ch: Chapter) => {
+  // Live-refresh the chapter LIST when chapters change elsewhere (e.g. the background agent creates
+  // or generates chapters). Only touches the list — never the open chapter's editing state.
+  useEffect(() => {
+    if (!id || chaptersVersion === 0) return;
+    let cancelled = false;
+    chapterApi.getByProject(id).then((data) => {
+      if (cancelled) return;
+      setAllChapters(data.sort((a, b) => a.order_index - b.order_index));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chaptersVersion]);
+
+  const handleSelectChapter = async (ch: Chapter) => {
     if (!isSaved) {
-      if (!window.confirm(tx(uiLanguage, '有未保存的内容，确定切换章节吗？', 'You have unsaved changes. Switch chapter anyway?'))) return;
+      const ok = await uiConfirm({
+        title: tx(uiLanguage, '切换章节', 'Switch chapter'),
+        message: tx(uiLanguage, '有未保存的内容，确定切换章节吗？', 'You have unsaved changes. Switch chapter anyway?'),
+      });
+      if (!ok) return;
     }
     navigate(`/long-novel/${id}/editor/${ch.id}`, { replace: true });
     setChapter(ch);
@@ -337,23 +360,82 @@ export function LongNovelEditorPage() {
     setError(null);
   };
 
+  const renameChapterInList = async (ch: Chapter) => {
+    const title = await uiPrompt({
+      title: tx(uiLanguage, '章节重命名', 'Rename chapter'),
+      label: tx(uiLanguage, '章节标题', 'Chapter title'),
+      defaultValue: ch.title,
+    });
+    if (!title?.trim()) return;
+    const t = title.trim();
+    await chapterApi.updateMeta(ch.id, { title: t });
+    setAllChapters((prev) => prev.map((c) => (c.id === ch.id ? { ...c, title: t } : c)));
+    setChapter((prev) => (prev && prev.id === ch.id ? { ...prev, title: t } : prev));
+  };
+
   const handleCreateChapter = async () => {
     if (!id || !newTitle.trim()) return;
     const maxOrder = allChapters.length > 0 ? Math.max(...allChapters.map((c) => c.order_index)) : 0;
+
+    // Decide where the new chapter goes. If an arc is selected, insert right AFTER that arc's
+    // current last chapter; otherwise append to the global end.
+    const targetArc = newChapterArcId ? arcs.find((a) => a.id === newChapterArcId) : undefined;
+    let insertAfterOrder = maxOrder;
+    if (targetArc) {
+      const builtIds = new Set(targetArc.builtChapterIds || []);
+      const arcChapters = allChapters.filter((c) => c.arc_id === targetArc.id || builtIds.has(c.id));
+      if (arcChapters.length > 0) {
+        insertAfterOrder = Math.max(...arcChapters.map((c) => c.order_index));
+      } else {
+        // Empty arc: place after the last chapter of all arcs ordered before this one.
+        const precedingArcIds = new Set(arcs.filter((a) => a.order <= targetArc.order).map((a) => a.id));
+        const preceding = allChapters.filter((c) => c.arc_id && precedingArcIds.has(c.arc_id));
+        insertAfterOrder = preceding.length > 0 ? Math.max(...preceding.map((c) => c.order_index)) : maxOrder;
+      }
+    }
+    const newOrder = insertAfterOrder + 1;
+
+    // Shift every existing chapter at/after the insertion slot down by one (skip when appending).
+    if (newOrder <= maxOrder) {
+      const toShift = allChapters
+        .filter((c) => c.order_index >= newOrder)
+        .sort((a, b) => b.order_index - a.order_index); // high → low to avoid transient collisions
+      for (const c of toShift) {
+        await chapterApi.updateMeta(c.id, { order_index: c.order_index + 1 });
+      }
+    }
+
     const newChapter = await chapterApi.create({
       project_id: id,
       title: newTitle.trim(),
-      order_index: maxOrder + 1,
+      order_index: newOrder,
       outline_goal: newGoal || undefined,
       conflict: newConflict || undefined,
     });
+    // Associate the new chapter with the selected arc (arc_id + arc.builtChapterIds).
+    if (targetArc) {
+      await chapterApi.updateMeta(newChapter.id, { arc_id: targetArc.id });
+      const existingBuilt = targetArc.builtChapterIds || [];
+      if (!existingBuilt.includes(newChapter.id)) {
+        updatePlotArc(id, targetArc.id, { builtChapterIds: [...existingBuilt, newChapter.id] });
+      }
+    }
+
     const updated = await chapterApi.getByProject(id);
     setAllChapters(updated.sort((a, b) => a.order_index - b.order_index));
     setShowNewChapterForm(false);
     setNewTitle('');
     setNewGoal('');
     setNewConflict('');
-    handleSelectChapter(newChapter);
+    setNewChapterArcId('');
+    const created = updated.find((c) => c.id === newChapter.id) || newChapter;
+    handleSelectChapter(created);
+  };
+
+  const openNewChapterForm = () => {
+    // Default the arc to the currently active arc (if any) so新章 lands in the arc being written.
+    setNewChapterArcId(activeArc?.id || '');
+    setShowNewChapterForm(true);
   };
 
   const handleSave = async () => {
@@ -362,6 +444,12 @@ export function LongNovelEditorPage() {
     try {
       const illustrationsPayload = JSON.stringify(illustrations);
       await chapterApi.update(chapter.id, content, content, illustrationsPayload);
+      // Persist the chapter plan (标题 / 本章目标 / 核心冲突) edited in the planning panel.
+      await chapterApi.updateMeta(chapter.id, {
+        title: chapter.title,
+        outline_goal: chapter.outline_goal ?? '',
+        conflict: chapter.conflict ?? '',
+      });
       setIsSaved(true);
       const wordCount = content.trim() ? content.trim().replace(/\s+/g, '').length : 0;
       const updated: Chapter = { ...chapter, final_text: content, draft_text: content, word_count: wordCount, illustrations: illustrationsPayload };
@@ -435,6 +523,20 @@ export function LongNovelEditorPage() {
             .catch((e) => console.warn('[KB] Entity extraction failed:', e));
         }
       }
+
+      // Container (容器) + character-growth (成长路线) per-chapter AI auto-update.
+      // Fire-and-forget: evolves every autoUpdatePerChapter container and any started growth route.
+      if (hasValidTextConfig && id && content.trim().length > 200) {
+        runChapterAutoUpdates({
+          projectId: id,
+          chapterId: chapter.id,
+          chapterOrder: chapter.order_index,
+          chapterTitle: chapter.title,
+          chapterText: content,
+          textConfig: textModelConfig,
+          uiLanguage,
+        }).catch((e) => console.warn('[Container/Growth] auto-update failed:', e));
+      }
     } catch {
       setError(tx(uiLanguage, '保存失败', 'Save failed'));
     } finally {
@@ -479,9 +581,13 @@ export function LongNovelEditorPage() {
     // Combine arc context + realm system + world setting.
     // Realm context goes BEFORE worldSetting so the LLM treats it as a foundational
     // power-scaling rule, not a footnote.
+    // Soft guidance from containers flagged "affects chapter generation" + latest character growth.
+    const containerGuidance = buildGenerationGuidance(id, 'chapter', uiLanguage);
+
     const worldParts: string[] = [];
     if (arcContext) worldParts.push(arcContext);
     if (realmContext) worldParts.push(realmContext);
+    if (containerGuidance) worldParts.push(containerGuidance);
     if (worldSetting) worldParts.push(worldSetting);
     const combinedWorldSetting = worldParts.length > 0 ? worldParts.join('\n\n') : undefined;
 
@@ -554,6 +660,11 @@ export function LongNovelEditorPage() {
         outputLanguage: uiLanguage,
         textConfig: textModelConfig,
       });
+
+      // Strip a stray leading title/number the model may have prepended (fresh generation only).
+      if (!isContinuation && !cancelRef.current) {
+        setContent((prev) => stripChapterHeading(prev, chapter.title));
+      }
 
       // Auto-decrement ending countdown if in ending phase
       if (activeArc?.status === 'ending' && id) {
@@ -629,9 +740,43 @@ export function LongNovelEditorPage() {
           { uiLanguage }
         )
       : '';
-    const arcContext = realmCtxForFill
-      ? `${rawArcContext}\n\n${realmCtxForFill}`.trim()
-      : rawArcContext;
+
+    // Ground the plan in the full project context, or it will mislead chapter generation:
+    // 大纲 + 所属副本/弧线（含细纲）+ 容器手动知识库 + 本地知识库索引检索 + 境界体系。
+    const targetArc = (newChapterArcId ? arcs.find((x) => x.id === newChapterArcId) : null) || activeArc || null;
+    const outlineText = id ? getLongNovelOutline(id).slice(0, 2000) : '';
+    const containerGuidance = id ? buildGenerationGuidance(id, 'chapter', uiLanguage) : '';
+    let volArcBlock = '';
+    if (id && targetArc) {
+      const vol = targetArc.volumeId ? getVolumes(id).find((v) => v.id === targetArc.volumeId) : undefined;
+      volArcBlock = [
+        vol && tx(uiLanguage, `所属副本：${vol.name}${vol.description ? `——${vol.description}` : ''}`, `Volume: ${vol.name}${vol.description ? ` — ${vol.description}` : ''}`),
+        tx(uiLanguage, `目标弧线：${targetArc.title}`, `Target arc: ${targetArc.title}`),
+        targetArc.summary && tx(uiLanguage, `弧线概述：${targetArc.summary}`, `Arc summary: ${targetArc.summary}`),
+        targetArc.miniOutline && tx(uiLanguage, `弧线细纲：\n${targetArc.miniOutline.slice(0, 800)}`, `Arc mini-outline:\n${targetArc.miniOutline.slice(0, 800)}`),
+      ].filter(Boolean).join('\n');
+    }
+    // Local knowledge base (embedding index) retrieval when configured.
+    let kbContext = '';
+    if (id && hasValidEmbeddingConfig) {
+      const query = [aiFillUserReq, targetArc?.title, targetArc?.summary].filter(Boolean).join(' ').slice(0, 400)
+        || tx(uiLanguage, `第${nextIndex}章 剧情规划`, `chapter ${nextIndex} planning`);
+      try {
+        kbContext = await knowledgeApi.retrieveContext({
+          projectId: id, query, topK: 6, excludeChapterIds: [],
+          embeddingConfig, includeSummaries: summariesEnabled, includeForeshadowing: true,
+        });
+      } catch (err) { console.warn('KB retrieve for plan failed', err); }
+    }
+
+    const arcContext = [
+      outlineText && tx(uiLanguage, `【大纲】\n${outlineText}`, `[Outline]\n${outlineText}`),
+      volArcBlock,
+      rawArcContext,
+      realmCtxForFill,
+      containerGuidance,
+      kbContext && tx(uiLanguage, `【相关记忆 / 知识库检索】\n${kbContext}`, `[Retrieved memory / knowledge base]\n${kbContext}`),
+    ].filter((x) => x && x.trim()).join('\n\n');
 
     const unlisten = await listen<string>('chapter-outline-stream', (e) => {
       if (aiFillCancelRef.current) return;
@@ -668,12 +813,6 @@ export function LongNovelEditorPage() {
     if (!id || !activeArc) return;
     updatePlotArc(id, activeArc.id, { status: 'completed', chaptersUntilEnd: undefined });
     // Next arc stays 'upcoming'; user manually enters it from the arc list
-  };
-
-  const handleStartArc = (arcId: string, chapterCount: number) => {
-    if (!id || activeArc) return;
-    updatePlotArc(id, arcId, { status: 'active', chapterCount });
-    setExpandedArcId(null);
   };
 
   const handleGenerateMiniOutline = async () => {
@@ -868,8 +1007,9 @@ export function LongNovelEditorPage() {
     setIsSaved(false);
   };
 
-  const handleDeleteIllustration = (illId: string) => {
-    if (!window.confirm(tx(uiLanguage, '确定删除这张插图吗？', 'Delete this illustration?'))) return;
+  const handleDeleteIllustration = async (illId: string) => {
+    const ok = await uiConfirm({ title: tx(uiLanguage, '删除插图', 'Delete illustration'), message: tx(uiLanguage, '确定删除这张插图吗？', 'Delete this illustration?'), danger: true });
+    if (!ok) return;
     setIllustrations((prev) => prev.filter((item) => item.id !== illId));
     setAnchorEdits((prev) => { const next = { ...prev }; delete next[illId]; return next; });
     if (activeIllustrationId === illId) setActiveIllustrationId(null);
@@ -957,7 +1097,7 @@ export function LongNovelEditorPage() {
             {tx(uiLanguage, '章节', 'Chapters')}
           </span>
           <button
-            onClick={() => setShowNewChapterForm(true)}
+            onClick={openNewChapterForm}
             className="p-1.5 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600"
             title={tx(uiLanguage, '新建章节', 'New Chapter')}
           >
@@ -966,23 +1106,38 @@ export function LongNovelEditorPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {sortedChapters.map((ch) => (
-            <button
-              key={ch.id}
-              onClick={() => handleSelectChapter(ch)}
-              className={`w-full text-left px-3 py-2.5 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
-                chapter?.id === ch.id ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400' : 'text-gray-700 dark:text-gray-300'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400 w-4 flex-shrink-0">{ch.order_index}</span>
-                <span className="text-sm truncate">{ch.title}</span>
+          {sortedChapters.map((ch) => {
+            const s = chapterStructureLabel(ch.id, ch.arc_id, arcs, volumes);
+            return (
+              <div
+                key={ch.id}
+                onClick={() => handleSelectChapter(ch)}
+                className={`group w-full text-left px-3 py-2.5 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer ${
+                  chapter?.id === ch.id ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400' : 'text-gray-700 dark:text-gray-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400 w-4 flex-shrink-0">{ch.order_index}</span>
+                  <span className="text-sm truncate flex-1">{ch.title}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); renameChapterInList(ch); }}
+                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-gray-400 hover:text-blue-600 flex-shrink-0 transition-all"
+                    title={tx(uiLanguage, '重命名', 'Rename')}
+                  >
+                    <Edit2 className="w-3 h-3" />
+                  </button>
+                </div>
+                {(s.volume || s.arc) && (
+                  <div className="text-[11px] text-purple-500 dark:text-purple-400 mt-0.5 pl-6 truncate">
+                    {[s.volume, s.arc].filter(Boolean).join(' · ')}
+                  </div>
+                )}
+                {ch.word_count > 0 && (
+                  <div className="text-xs text-gray-400 mt-0.5 pl-6">{ch.word_count.toLocaleString()}字</div>
+                )}
               </div>
-              {ch.word_count > 0 && (
-                <div className="text-xs text-gray-400 mt-0.5 pl-6">{ch.word_count.toLocaleString()}字</div>
-              )}
-            </button>
-          ))}
+            );
+          })}
         </div>
 
         {showNewChapterForm && (
@@ -994,6 +1149,42 @@ export function LongNovelEditorPage() {
               placeholder={tx(uiLanguage, '章节标题 *', 'Chapter title *')}
               className="w-full px-2 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-purple-500"
             />
+            <div>
+              <select
+                value={newChapterArcId}
+                onChange={(e) => setNewChapterArcId(e.target.value)}
+                className="w-full px-2 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                title={tx(uiLanguage, '归属副本 / 弧线', 'Volume / Arc')}
+              >
+                <option value="">{tx(uiLanguage, '不归属弧线（排到末尾）', 'No arc (append to end)')}</option>
+                {[...volumes].sort((a, b) => a.order - b.order).map((vol) => {
+                  const volArcs = sortedArcs.filter((a) => a.volumeId === vol.id);
+                  if (volArcs.length === 0) return null;
+                  return (
+                    <optgroup key={vol.id} label={vol.name}>
+                      {volArcs.map((a) => (
+                        <option key={a.id} value={a.id}>{a.title}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+                {(() => {
+                  const ids = new Set(volumes.map((v) => v.id));
+                  const orphans = sortedArcs.filter((a) => !a.volumeId || !ids.has(a.volumeId));
+                  if (orphans.length === 0) return null;
+                  return (
+                    <optgroup label={tx(uiLanguage, '未分配副本', 'Unassigned')}>
+                      {orphans.map((a) => (
+                        <option key={a.id} value={a.id}>{a.title}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })()}
+              </select>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {tx(uiLanguage, '新章会排在所选弧线最后一章之后', 'New chapter is placed after the arc’s last chapter')}
+              </p>
+            </div>
             <input
               type="text"
               value={newGoal}
@@ -1029,7 +1220,7 @@ export function LongNovelEditorPage() {
                 {tx(uiLanguage, '创建', 'Create')}
               </button>
               <button
-                onClick={() => { setShowNewChapterForm(false); setNewTitle(''); setNewGoal(''); setNewConflict(''); }}
+                onClick={() => { setShowNewChapterForm(false); setNewTitle(''); setNewGoal(''); setNewConflict(''); setNewChapterArcId(''); }}
                 className="flex-1 text-xs py-1.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 transition-colors"
               >
                 {tx(uiLanguage, '取消', 'Cancel')}
@@ -1048,33 +1239,31 @@ export function LongNovelEditorPage() {
             <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
               <div className="flex-1 min-w-0">
                 <h2 className="font-semibold text-gray-900 dark:text-white truncate">{chapter.title}</h2>
-                {chapter.outline_goal && (
-                  <p className="text-xs text-gray-500 truncate">{chapter.outline_goal}</p>
-                )}
+                <button
+                  onClick={() => setShowPlanning((v) => !v)}
+                  className="text-xs text-gray-500 hover:text-purple-600 dark:hover:text-purple-400 truncate flex items-center gap-1 max-w-full"
+                >
+                  <FileText className="w-3 h-3 flex-shrink-0" />
+                  {chapter.outline_goal
+                    ? <span className="truncate">{chapter.outline_goal}</span>
+                    : <span>{tx(uiLanguage, '本章规划（目标 / 核心冲突）', 'Chapter plan (goal / conflict)')}</span>}
+                </button>
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 {error && (
-                  <span className="text-xs text-red-500 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3" />
+                  <span className="text-xs text-red-500 flex items-center gap-1 max-w-[12rem] truncate">
+                    <AlertTriangle className="w-3 h-3 flex-shrink-0" />
                     {error}
                   </span>
                 )}
-                {id && (
-                  <BookSummaryButton
-                    projectId={id}
-                    projectTitle={projectTitle}
-                    projectDescription={projectDescription}
-                    compact
-                  />
-                )}
                 <Button
-                  variant="outline"
-                  onClick={() => setShowCultivationModal(true)}
+                  variant={showPlanning ? 'secondary' : 'outline'}
+                  onClick={() => setShowPlanning((v) => !v)}
                   className="text-sm py-1.5"
-                  title={tx(uiLanguage, '修炼境界表 + 角色境界追踪', 'Cultivation realms + character realm tracker')}
+                  title={tx(uiLanguage, '本章规划：目标 / 核心冲突', 'Chapter plan: goal / conflict')}
                 >
-                  <Sparkles className="w-4 h-4 mr-1 text-amber-500" />
-                  {tx(uiLanguage, '境界', 'Realms')}
+                  <FileText className="w-4 h-4 mr-1" />
+                  {tx(uiLanguage, '规划', 'Plan')}
                 </Button>
                 <Button
                   variant="outline"
@@ -1101,27 +1290,71 @@ export function LongNovelEditorPage() {
                     {tx(uiLanguage, '停止', 'Stop')}
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  onClick={openPromoStyleConfig}
-                  disabled={isGeneratingPromo || !content || content.trim().length < 100}
-                  className="text-sm py-1.5"
-                  title={!content || content.trim().length < 100 ? tx(uiLanguage, '需要至少100字', 'Need at least 100 chars') : tx(uiLanguage, '生成章节封面和摘要', 'Generate chapter cover & summary')}
-                >
-                  {isGeneratingPromo ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Image className="w-4 h-4 mr-1" />}
-                  {tx(uiLanguage, '推文', 'Promo')}
-                </Button>
-                <Button
-                  variant={isIllustrationMode ? 'secondary' : 'outline'}
-                  onClick={() => setIsIllustrationMode((v) => !v)}
-                  className="text-sm py-1.5"
-                  title={isIllustrationMode ? tx(uiLanguage, '退出插图模式', 'Exit illustration mode') : tx(uiLanguage, '进入插图模式', 'Enter illustration mode')}
-                >
-                  <Image className="w-4 h-4 mr-1" />
-                  {tx(uiLanguage, '插图', 'Illustration')}
-                </Button>
+                <MoreMenu label={tx(uiLanguage, '更多', 'More')}>
+                  <MoreMenuItem
+                    icon={<Boxes className="w-4 h-4 text-purple-500" />}
+                    label={tx(uiLanguage, '容器', 'Containers')}
+                    disabled={!id}
+                    onClick={() => id && navigate(`/long-novel/${id}/containers`)}
+                  />
+                  <MoreMenuItem
+                    icon={<Sparkles className="w-4 h-4 text-amber-500" />}
+                    label={tx(uiLanguage, '境界系统', 'Realms')}
+                    onClick={() => setShowCultivationModal(true)}
+                  />
+                  <MoreMenuItem
+                    icon={isGeneratingPromo ? <Loader2 className="w-4 h-4 animate-spin" /> : <Image className="w-4 h-4" />}
+                    label={tx(uiLanguage, '生成推文', 'Promo')}
+                    disabled={isGeneratingPromo || !content || content.trim().length < 100}
+                    onClick={openPromoStyleConfig}
+                  />
+                  <MoreMenuItem
+                    icon={<Image className="w-4 h-4" />}
+                    label={isIllustrationMode ? tx(uiLanguage, '退出插图模式', 'Exit illustration mode') : tx(uiLanguage, '插图模式', 'Illustration mode')}
+                    onClick={() => setIsIllustrationMode((v) => !v)}
+                  />
+                </MoreMenu>
               </div>
             </div>
+
+            {/* Chapter planning panel — 章节标题 / 本章目标 / 核心冲突 (mirrors Android EditorScreen) */}
+            {showPlanning && (
+              <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 flex-shrink-0 space-y-2">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{tx(uiLanguage, '章节标题', 'Chapter Title')}</label>
+                  <input
+                    type="text"
+                    value={chapter.title}
+                    onChange={(e) => { setChapter({ ...chapter, title: e.target.value }); setIsSaved(false); }}
+                    className="w-full px-2.5 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    placeholder={tx(uiLanguage, '章节标题', 'Chapter title')}
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{tx(uiLanguage, '本章目标', 'Chapter Goal')}</label>
+                    <textarea
+                      value={chapter.outline_goal || ''}
+                      onChange={(e) => { setChapter({ ...chapter, outline_goal: e.target.value }); setIsSaved(false); }}
+                      className="w-full px-2.5 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-16 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder={tx(uiLanguage, '本章要推进什么剧情 / 完成什么目标', 'What this chapter should accomplish')}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{tx(uiLanguage, '核心冲突', 'Core Conflict')}</label>
+                    <textarea
+                      value={chapter.conflict || ''}
+                      onChange={(e) => { setChapter({ ...chapter, conflict: e.target.value }); setIsSaved(false); }}
+                      className="w-full px-2.5 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-16 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder={tx(uiLanguage, '本章的核心矛盾 / 张力', "This chapter's central tension")}
+                    />
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  {tx(uiLanguage, '保存章节时一并保存；生成正文时作为本章规划注入提示词。', 'Saved with the chapter; injected into the prompt when generating.')}
+                </p>
+              </div>
+            )}
 
             {/* Promo result banner */}
             {(promoResult || promoError) && (
@@ -1205,7 +1438,7 @@ export function LongNovelEditorPage() {
               : tx(uiLanguage, '还没有章节，创建第一章开始吧', 'No chapters yet — create the first one')
             }</p>
             <Button
-              onClick={() => setShowNewChapterForm(true)}
+              onClick={openNewChapterForm}
               className="bg-purple-600 hover:bg-purple-700"
             >
               <Plus className="w-4 h-4 mr-2" />
@@ -1320,7 +1553,7 @@ export function LongNovelEditorPage() {
       </div>
 
       {/* Right panel: arc progress */}
-      <div className={`flex-shrink-0 border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex flex-col transition-all ${arcPanelOpen ? 'w-64' : 'w-10'}`}>
+      <div className={`flex-shrink-0 border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex flex-col transition-all ${arcPanelOpen ? 'w-80' : 'w-10'}`}>
         <button
           onClick={() => setArcPanelOpen((v) => !v)}
           className="p-2 flex items-center justify-center border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors w-full"
@@ -1337,37 +1570,10 @@ export function LongNovelEditorPage() {
 
         {arcPanelOpen && (
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {/* Active arc banner */}
-            {activeArc && (
-              <div className="rounded-xl p-3 text-xs space-y-1.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
-                <div className="flex items-center justify-between gap-1">
-                  <div className="flex items-center gap-1.5 font-medium text-blue-700 dark:text-blue-400">
-                    <Play className="w-3.5 h-3.5 text-blue-600" />
-                    <span>{tx(uiLanguage, '当前弧线', 'Active Arc')}</span>
-                  </div>
-                  {activeArc.summary && (
-                    <button
-                      onClick={() => setArcDetailOpen(true)}
-                      title={tx(uiLanguage, '查看弧线全文', 'View full arc')}
-                      className="p-0.5 rounded hover:bg-black/5 text-blue-500"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-                <p className="font-semibold text-gray-800 dark:text-gray-200">{activeArc.title}</p>
-                <p className="text-gray-500 dark:text-gray-400">
-                  {tx(uiLanguage, `计划 ${activeArc.chapterCount || '?'} 章`, `${activeArc.chapterCount || '?'} chapters planned`)}
-                </p>
-                {activeArc.summary && (
-                  <p className="text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-2">
-                    {activeArc.summary}
-                  </p>
-                )}
-              </div>
-            )}
+            {/* 副本 / 弧线 tree — same component as the project page */}
+            {id && <VolumeArcPanel projectId={id} uiLanguage={uiLanguage} compact />}
 
-            {/* Arc mini-outline controls */}
+            {/* Arc mini-outline controls — build blank chapters for the active arc */}
             {activeArc && (
               <div className="space-y-2">
                 {/* Generate mini-outline */}
@@ -1476,86 +1682,6 @@ export function LongNovelEditorPage() {
               </div>
             )}
 
-            {/* Arc list */}
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                {tx(uiLanguage, '全部弧线', 'All Arcs')}
-              </p>
-              {sortedArcs.map((arc, idx) => {
-                const isActivatable = arc.status === 'upcoming' && arc.id === nextActivatableArc?.id;
-                const isExpanded = expandedArcId === arc.id;
-                return (
-                  <div key={arc.id}>
-                    <button
-                      onClick={() => isActivatable ? setExpandedArcId(isExpanded ? null : arc.id) : undefined}
-                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs w-full text-left ${
-                        arc.status === 'completed'
-                          ? 'text-green-700 dark:text-green-400 cursor-default'
-                          : arc.status === 'active' || arc.status === 'ending'
-                          ? 'text-purple-700 dark:text-purple-400 font-medium cursor-default'
-                          : isActivatable
-                          ? 'text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer'
-                          : 'text-gray-400 cursor-default'
-                      }`}
-                    >
-                      <span className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-xs flex-shrink-0 ${
-                        arc.status === 'completed' ? 'bg-green-500'
-                        : arc.status === 'active' || arc.status === 'ending' ? 'bg-purple-600'
-                        : isActivatable ? 'bg-blue-400'
-                        : 'bg-gray-300'
-                      }`}>
-                        {arc.status === 'completed' ? '✓' : idx + 1}
-                      </span>
-                      <span className="truncate flex-1">{arc.title}</span>
-                      {isActivatable && (
-                        <ChevronDown className={`w-3 h-3 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                      )}
-                      {arc.status === 'upcoming' && !isActivatable && (
-                        <Lock className="w-3 h-3 flex-shrink-0 text-gray-300" />
-                      )}
-                    </button>
-                    {isActivatable && isExpanded && (
-                      <div className="mx-1 mb-1.5 px-2 py-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 space-y-2">
-                        {arc.summary && (
-                          <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-4">{arc.summary}</p>
-                        )}
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500">{tx(uiLanguage, '章节数', 'Chapters')}:</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={50}
-                            value={arcChapterCountInput}
-                            onChange={(e) => setArcChapterCountInput(e.target.value)}
-                            className="w-14 px-1.5 py-1 text-xs border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                          />
-                          <span className="text-xs text-gray-500">{tx(uiLanguage, '章', 'ch')}</span>
-                        </div>
-                        <button
-                          onClick={() => handleStartArc(arc.id, parseInt(arcChapterCountInput, 10) || 8)}
-                          className="w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                        >
-                          <Play className="w-3 h-3" />
-                          {tx(uiLanguage, '进入此弧线', 'Enter this arc')}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {sortedArcs.length === 0 && (
-                <p className="text-xs text-gray-400 italic">
-                  {tx(uiLanguage, '暂无弧线，在大纲页添加', 'No arcs yet — add in outline')}
-                </p>
-              )}
-            </div>
-
-            <button
-              onClick={() => navigate(`/long-novel/${id}/outline`)}
-              className="w-full text-xs py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-gray-500 hover:border-purple-400 hover:text-purple-600 transition-colors"
-            >
-              {tx(uiLanguage, '管理剧情弧线', 'Manage arcs')}
-            </button>
           </div>
         )}
       </div>

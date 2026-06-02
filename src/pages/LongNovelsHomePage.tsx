@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import { projectApi } from '@services/api';
+import { projectApi, chapterApi } from '@services/api';
 import { Button } from '@components/Button';
+import { uiAlert } from '@components/uiDialog';
 import { Plus, BookOpen, Calendar, TrendingUp, Trash2, Layers } from 'lucide-react';
 import { formatDate, formatWordCount, calculateProgress, confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
@@ -10,17 +11,31 @@ import type { Project } from '@typings/index';
 
 export function LongNovelsHomePage() {
   const navigate = useNavigate();
-  const { projects, setProjects, uiLanguage, novelTypeByProject, setNovelType, plotArcsByProject } =
+  const { projects, setProjects, uiLanguage, novelTypeByProject, setNovelType, plotArcsByProject, volumesByProject } =
     useAppStore();
   // Render instantly if zustand has cached projects from a previous mount in this session.
   const [loading, setLoading] = useState(projects.length === 0);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // pid → chapter count (loaded lazily; cards show the count once available).
+  const [chapterCounts, setChapterCounts] = useState<Record<string, number>>({});
 
   const longProjects = projects.filter((p) => novelTypeByProject[p.id] === 'long');
 
   useEffect(() => {
     loadProjects();
+    loadChapterCounts();
   }, []);
+
+  const loadChapterCounts = async () => {
+    try {
+      const rows = await chapterApi.getCounts();
+      const map: Record<string, number> = {};
+      for (const r of rows) map[r.project_id] = r.count;
+      setChapterCounts(map);
+    } catch (error) {
+      console.error('Failed to load chapter counts:', error);
+    }
+  };
 
   const loadProjects = async () => {
     try {
@@ -56,7 +71,7 @@ export function LongNovelsHomePage() {
       await projectApi.delete(projectId);
       loadProjects();
     } catch {
-      alert(tx(uiLanguage, '删除项目失败', 'Failed to delete project'));
+      void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message: tx(uiLanguage, '删除项目失败', 'Failed to delete project') });
     }
   };
 
@@ -113,6 +128,8 @@ export function LongNovelsHomePage() {
               key={project.id}
               project={project}
               arcs={plotArcsByProject[project.id] || []}
+              volumeCount={(volumesByProject[project.id] || []).length}
+              chapterCount={chapterCounts[project.id] ?? null}
               uiLanguage={uiLanguage}
               onClick={() => navigate(`/long-novel/${project.id}`)}
               onDelete={() => handleDeleteProject(project.id)}
@@ -139,12 +156,14 @@ export function LongNovelsHomePage() {
 interface LongNovelCardProps {
   project: Project;
   arcs: import('@store/index').PlotArc[];
+  volumeCount: number;
+  chapterCount: number | null;
   uiLanguage: 'zh' | 'en';
   onClick: () => void;
   onDelete: () => void;
 }
 
-function LongNovelCard({ project, arcs, uiLanguage, onClick, onDelete }: LongNovelCardProps) {
+function LongNovelCard({ project, arcs, volumeCount, chapterCount, uiLanguage, onClick, onDelete }: LongNovelCardProps) {
   const progress = project.target_word_count
     ? calculateProgress(project.current_word_count, project.target_word_count)
     : 0;
@@ -187,32 +206,35 @@ function LongNovelCard({ project, arcs, uiLanguage, onClick, onDelete }: LongNov
     onDelete();
   };
 
+  const cleanDescription = (project.description || '')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\n/g, ' ')
+    .trim();
+
   return (
     <div
       onClick={onClick}
-      className="bg-white dark:bg-gray-800 rounded-xl border-2 border-purple-100 dark:border-purple-900/30 p-6 hover:shadow-lg hover:border-purple-300 dark:hover:border-purple-700 transition-all cursor-pointer relative group"
+      className="h-[340px] flex flex-col bg-white dark:bg-gray-800 rounded-xl border-2 border-purple-100 dark:border-purple-900/30 p-5 hover:shadow-lg hover:border-purple-300 dark:hover:border-purple-700 transition-all cursor-pointer relative group overflow-hidden"
     >
       {/* Type badge */}
-      <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 text-xs font-medium">
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 text-xs font-medium">
         <BookOpen className="w-3 h-3" />
         {tx(uiLanguage, '长篇', 'Long Novel')}
       </div>
 
       <button
         onClick={handleDelete}
-        className="absolute top-3 right-3 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600"
+        className="absolute top-3 right-3 z-10 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600"
         title={tx(uiLanguage, '删除项目', 'Delete project')}
       >
         <Trash2 className="w-4 h-4" />
       </button>
 
-      <div className="mt-6 flex gap-4">
-        {/* Cover image */}
-        <div className="flex-shrink-0">
-          <div
-            className="rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600"
-            style={{ width: 108, height: 192 }}
-          >
+      <div className="mt-7 flex gap-4 flex-1 min-h-0">
+        {/* Cover image — fills the card height for a uniform look */}
+        <div className="flex-shrink-0 w-[108px] h-full">
+          <div className="w-full h-full rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600">
             {coverSrc ? (
               <img src={coverSrc} alt="cover-preview" className="w-full h-full object-cover" />
             ) : (
@@ -223,83 +245,106 @@ function LongNovelCard({ project, arcs, uiLanguage, onClick, onDelete }: LongNov
           </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between mb-3 pr-8">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white line-clamp-2">
+        {/* Content — fixed-height sections so every card lines up */}
+        <div className="flex-1 min-w-0 flex flex-col h-full">
+          {/* Title + genre (reserves 2 lines) */}
+          <div className="flex items-start justify-between gap-2 h-[3.25rem] shrink-0 pr-6">
+            <h3 className="text-lg font-semibold leading-snug text-gray-900 dark:text-white line-clamp-2">
               {project.title}
             </h3>
             {project.genre && (
-              <span className="ml-2 px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400 flex-shrink-0">
+              <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400 flex-shrink-0">
                 {project.genre}
               </span>
             )}
           </div>
 
-          {project.description && (
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 line-clamp-2">
-              {project.description.replace(/#{1,6}\s+/g, '').replace(/\*\*/g, '').replace(/\n/g, ' ').trim()}
-            </p>
-          )}
+          {/* Description — always reserves exactly 3 lines (leading-5 × 3 = 3.75rem) so the
+              line-clamp ellipsis lands on line 3 and can never spill onto a 4th line. */}
+          <p className="mt-1 h-[3.75rem] shrink-0 overflow-hidden text-sm leading-5 text-gray-600 dark:text-gray-400 line-clamp-3">
+            {cleanDescription}
+          </p>
 
-          {/* Arc progress */}
-          {arcs.length > 0 && (
-            <div className="mb-4 p-3 rounded-lg bg-purple-50 dark:bg-purple-900/20">
-              <div className="flex items-center gap-2 mb-2">
-                <Layers className="w-3.5 h-3.5 text-purple-600" />
-                <span className="text-xs font-medium text-purple-700 dark:text-purple-300">
-                  {tx(uiLanguage, '剧情进度', 'Story Progress')}
-                </span>
-              </div>
-              <div className="flex gap-1.5 flex-wrap">
-                {arcs.map((arc) => (
-                  <span
-                    key={arc.id}
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      arc.status === 'completed'
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        : arc.status === 'active'
-                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                        : arc.status === 'ending'
-                        ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
-                        : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
-                    }`}
-                  >
-                    {arc.title}
-                  </span>
-                ))}
-              </div>
-              {activeArc && (
-                <p className="text-xs text-purple-600 dark:text-purple-400 mt-1.5">
-                  {activeArc.status === 'ending'
-                    ? tx(uiLanguage, `结尾阶段：还剩 ${activeArc.chaptersUntilEnd ?? '?'} 章`, `Ending phase: ${activeArc.chaptersUntilEnd ?? '?'} chapters left`)
-                    : tx(uiLanguage, `当前弧线：${activeArc.title}`, `Current arc: ${activeArc.title}`)}
-                </p>
-              )}
-            </div>
-          )}
-
-          <div className="space-y-2 mb-4">
-            <div className="flex items-center text-sm text-gray-600 dark:text-gray-400">
-              <TrendingUp className="w-4 h-4 mr-2" />
-              <span>
-                {formatWordCount(project.current_word_count)}
-                {project.target_word_count && ` / ${formatWordCount(project.target_word_count)}`}
+          {/* Arc progress — fixed-height box; overflow scrolls with the wheel */}
+          <div className="mt-2 h-[5.5rem] shrink-0 flex flex-col rounded-lg bg-purple-50 dark:bg-purple-900/20 p-2">
+            <div className="flex items-center gap-2 mb-1 shrink-0">
+              <Layers className="w-3.5 h-3.5 text-purple-600" />
+              <span className="text-xs font-medium text-purple-700 dark:text-purple-300">
+                {tx(uiLanguage, '剧情进度', 'Story Progress')}
               </span>
             </div>
-            <div className="flex items-center text-sm text-gray-600 dark:text-gray-400">
-              <Calendar className="w-4 h-4 mr-2" />
-              <span>{formatDate(project.updated_at)}</span>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1" onWheel={(e) => e.stopPropagation()}>
+              {arcs.length > 0 ? (
+                <>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {arcs.map((arc) => (
+                      <span
+                        key={arc.id}
+                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          arc.status === 'completed'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                            : arc.status === 'active'
+                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                            : arc.status === 'ending'
+                            ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+                            : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                        }`}
+                      >
+                        {arc.title}
+                      </span>
+                    ))}
+                  </div>
+                  {activeArc && (
+                    <p className="text-xs text-purple-600 dark:text-purple-400 mt-1.5">
+                      {activeArc.status === 'ending'
+                        ? tx(uiLanguage, `结尾阶段：还剩 ${activeArc.chaptersUntilEnd ?? '?'} 章`, `Ending phase: ${activeArc.chaptersUntilEnd ?? '?'} chapters left`)
+                        : tx(uiLanguage, `当前弧线：${activeArc.title}`, `Current arc: ${activeArc.title}`)}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">{tx(uiLanguage, '暂无剧情弧线', 'No plot arcs yet')}</p>
+              )}
             </div>
           </div>
 
-          {project.target_word_count && (
-            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+          {/* Spacer pushes the stats block to the bottom of the card */}
+          <div className="flex-1 min-h-0" />
+
+          {/* Word count + 副本/弧线/章节 counts on one row */}
+          <div className="flex items-center justify-between gap-2 text-xs text-gray-600 dark:text-gray-400 shrink-0">
+            <span className="flex items-center gap-1 min-w-0 truncate">
+              <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
+              <span className="truncate">
+                {formatWordCount(project.current_word_count)}
+                {project.target_word_count && ` / ${formatWordCount(project.target_word_count)}`}
+              </span>
+            </span>
+            <span className="flex items-center gap-1 flex-shrink-0 text-gray-500 dark:text-gray-400">
+              <span>{tx(uiLanguage, '副本', 'Vol')} {volumeCount}</span>
+              <span className="opacity-50">·</span>
+              <span>{tx(uiLanguage, '弧线', 'Arc')} {arcs.length}</span>
+              <span className="opacity-50">·</span>
+              <span>{tx(uiLanguage, '章', 'Ch')} {chapterCount ?? '…'}</span>
+            </span>
+          </div>
+
+          {/* Date */}
+          <div className="flex items-center text-xs text-gray-500 dark:text-gray-400 mt-1.5 shrink-0">
+            <Calendar className="w-3.5 h-3.5 mr-1.5 flex-shrink-0" />
+            <span className="truncate">{formatDate(project.updated_at)}</span>
+          </div>
+
+          {/* Progress bar */}
+          {project.target_word_count ? (
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 mt-2 shrink-0">
               <div
-                className="bg-purple-600 h-2 rounded-full transition-all"
+                className="bg-purple-600 h-1.5 rounded-full transition-all"
                 style={{ width: `${progress}%` }}
               />
             </div>
+          ) : (
+            <div className="h-1.5 mt-2 shrink-0" />
           )}
         </div>
       </div>
@@ -334,7 +379,7 @@ function CreateLongNovelModal({ onClose, onSuccess }: CreateLongNovelModalProps)
       });
       onSuccess(project.id);
     } catch {
-      alert(tx(uiLanguage, '创建项目失败', 'Failed to create project'));
+      void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message: tx(uiLanguage, '创建项目失败', 'Failed to create project') });
     } finally {
       setLoading(false);
     }

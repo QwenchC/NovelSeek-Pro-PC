@@ -50,6 +50,9 @@ export interface Chapter {
   status: 'draft' | 'review' | 'final';
   created_at: string;
   updated_at: string;
+  // The 剧情弧线 (PlotArc) this chapter belongs to. Mirrors Android `Chapter.arcId`; lets the
+  // long-novel UI walk chapter → arc → volume. Null for un-assigned/manual chapters.
+  arc_id?: string | null;
 }
 
 export interface CreateChapterInput {
@@ -67,6 +70,7 @@ export interface UpdateChapterMetaInput {
   conflict?: string;
   twist?: string;
   cliffhanger?: string;
+  arc_id?: string | null;
 }
 
 export interface Character {

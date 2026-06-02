@@ -78,7 +78,7 @@ const image = await aiApi.generateImage({
     nologo: true,
     enhance: true
   },
-  save_path: "E:/projects/NovelSeek-Pro-PC/assets/chapter1_scene1.png",
+  save_path: "E:/projects/NovelSeek-Ultra-PC/assets/chapter1_scene1.png",
   pollinations_key: undefined // 可选
 });
 

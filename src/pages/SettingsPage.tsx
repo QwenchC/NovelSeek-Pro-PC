@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '@store/index';
-import { aiApi, chapterApi, knowledgeApi } from '@services/api';
+import { aiApi, chapterApi, knowledgeApi, projectApi } from '@services/api';
+import type { ImportChapterFull } from '@services/api';
 import { Button } from '@components/Button';
+import { uiConfirm, uiAlert } from '@components/uiDialog';
 import type {
   EmbeddingConfig,
   ImageEngine,
@@ -34,19 +36,79 @@ type Status = 'idle' | 'testing' | 'success' | 'error';
 
 const BACKUP_VERSION = 1;
 
-const PROJECT_MAP_FIELDS = [
-  'novelTypeByProject',
-  'plotArcsByProject',
-  'charactersByProject',
-  'worldSettingByProject',
-  'timelineByProject',
-  'longNovelOutlineByProject',
-  'characterRelationshipsByProject',
-  'characterEventsByProject',
-  'cultivationRealmsByProject',
-  'characterRealmEventsByProject',
-  'promoByChapter',
-] as const;
+// Per-project maps are detected dynamically (any state/backup key ending in `ByProject`) so new
+// mechanisms are picked up automatically — matches the Android `AppRepository.importBackup`
+// approach. These keys are excluded from the generic merge:
+//  - KB caches / summaries: re-indexable, live in SQLite on PC.
+//  - novelChatsByProject: round-tripped under the Android-compatible top-level `novelChats` key.
+//  - chaptersByProject: chapter metadata is consumed by the SQLite content-import path, not the store.
+const EXCLUDED_BY_PROJECT_KEYS = new Set([
+  'kbIndexHashByProject',
+  'kbStaleByProject',
+  'summariesByProject',
+  'novelChatsByProject',
+  'chaptersByProject',
+]);
+
+function collectByProjectKeys(obj: Record<string, unknown>): string[] {
+  return Object.keys(obj).filter(
+    (k) => k.endsWith('ByProject') && !EXCLUDED_BY_PROJECT_KEYS.has(k)
+  );
+}
+
+// ── Image base64 convention bridging ──────────────────────────
+// PC renders <img src={...}> directly, so it stores FULL data URLs ("data:image/...;base64,xxx").
+// Android stores RAW base64 (decoded to a Bitmap). Convert at the import/export boundary so images
+// display on PC and round-trip back to Android.
+function toDataUrl(b: string): string {
+  return b.startsWith('data:') ? b : `data:image/png;base64,${b}`;
+}
+function toRawBase64(b: string): string {
+  return b.startsWith('data:') ? b.replace(/^data:[^;,]*;base64,/, '') : b;
+}
+
+/** Walk the image-bearing fields of a backup `data` object and convert base64 in place. */
+function normalizeBackupImages(data: Record<string, any>, mode: 'toDataUrl' | 'toRaw'): void {
+  const fix = mode === 'toDataUrl' ? toDataUrl : toRawBase64;
+  const fixField = (obj: any, key: string) => {
+    if (obj && typeof obj[key] === 'string' && obj[key]) obj[key] = fix(obj[key]);
+  };
+  // Character portraits.
+  const chars = data.charactersByProject;
+  if (chars && typeof chars === 'object') {
+    for (const arr of Object.values(chars)) {
+      if (Array.isArray(arr)) for (const c of arr) fixField(c, 'portraitBase64');
+    }
+  }
+  // Chapter promo images.
+  const promo = data.promoByChapter;
+  if (promo && typeof promo === 'object') {
+    for (const p of Object.values(promo)) fixField(p, 'imageBase64');
+  }
+  // Inline chapter illustrations.
+  const illus = data.chapterIllustrations;
+  if (illus && typeof illus === 'object') {
+    for (const arr of Object.values(illus)) {
+      if (Array.isArray(arr)) for (const it of arr) fixField(it, 'imageBase64');
+    }
+  }
+  // Project covers (cover_images is a JSON string of { imageBase64 } items).
+  if (Array.isArray(data.projects)) {
+    for (const p of data.projects) {
+      if (p && typeof p.cover_images === 'string' && p.cover_images) {
+        try {
+          const items = JSON.parse(p.cover_images);
+          if (Array.isArray(items)) {
+            for (const it of items) fixField(it, 'imageBase64');
+            p.cover_images = JSON.stringify(items);
+          }
+        } catch {
+          /* ignore malformed cover_images */
+        }
+      }
+    }
+  }
+}
 
 const APP_SETTINGS_FIELDS = [
   'textModelProfiles',
@@ -78,26 +140,28 @@ interface BackupSummary {
   hasAppSettings: boolean;
 }
 
-function collectProjectIds(maps: Record<string, unknown>[]): Set<string> {
+/** Collect distinct project ids: from any `*ByProject` map's keys plus an explicit `projects[]`. */
+function collectProjectIds(obj: Record<string, unknown>): Set<string> {
   const ids = new Set<string>();
-  for (const m of maps) {
+  for (const key of collectByProjectKeys(obj)) {
+    const m = obj[key];
     if (m && typeof m === 'object') {
-      for (const k of Object.keys(m)) ids.add(k);
+      for (const k of Object.keys(m as Record<string, unknown>)) ids.add(k);
+    }
+  }
+  const projects = obj.projects;
+  if (Array.isArray(projects)) {
+    for (const p of projects) {
+      const id = (p as { id?: string })?.id;
+      if (typeof id === 'string') ids.add(id);
     }
   }
   return ids;
 }
 
 function summarizeBackup(file: BackupBundle, currentState: any): BackupSummary {
-  const inMaps = PROJECT_MAP_FIELDS
-    .filter((k) => k !== 'promoByChapter')
-    .map((k) => file.data[k] as Record<string, unknown>);
-  const curMaps = PROJECT_MAP_FIELDS
-    .filter((k) => k !== 'promoByChapter')
-    .map((k) => currentState[k] as Record<string, unknown>);
-
-  const inIds = collectProjectIds(inMaps);
-  const curIds = collectProjectIds(curMaps);
+  const inIds = collectProjectIds(file.data);
+  const curIds = collectProjectIds(currentState);
   let overlap = 0;
   inIds.forEach((id) => {
     if (curIds.has(id)) overlap += 1;
@@ -210,6 +274,9 @@ export function SettingsPage() {
     setEntitiesEnabled,
   } = useAppStore();
 
+  // In-app, centered notice dialog (replaces browser-native alert "localhost:1420 显示" popups).
+  const notify = (message: string) => { void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message }); };
+
   const [localProfiles, setLocalProfiles] = useState<TextModelProfile[]>(textModelProfiles);
   const [localActiveProfileId, setLocalActiveProfileId] = useState(activeTextModelProfileId);
   const [newPlatformName, setNewPlatformName] = useState('');
@@ -243,6 +310,7 @@ export function SettingsPage() {
 
   // Backup / Restore state
   const [backupStatus, setBackupStatus] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
   const [importPreview, setImportPreview] = useState<{
     file: BackupBundle;
     fileName: string;
@@ -350,7 +418,7 @@ export function SettingsPage() {
 
   const testTextModel = async () => {
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
-      alert(
+      notify(
         tx(
           uiLanguage,
           '请完整填写当前平台配置：API Key、API URL、模型、Temperature',
@@ -404,7 +472,7 @@ export function SettingsPage() {
 
   const testEmbedding = async () => {
     if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
-      alert(
+      notify(
         tx(
           uiLanguage,
           '请完整填写 Embedding 配置：API Key、API URL、模型',
@@ -426,7 +494,7 @@ export function SettingsPage() {
   const rebuildKnowledgeBase = async () => {
     if (!rebuildProjectId) return;
     if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
-      alert(
+      notify(
         tx(
           uiLanguage,
           '请先填写并保存 Embedding 配置',
@@ -435,13 +503,14 @@ export function SettingsPage() {
       );
       return;
     }
-    const confirmed = window.confirm(
-      tx(
+    const confirmed = await uiConfirm({
+      title: tx(uiLanguage, '重建知识库', 'Rebuild knowledge base'),
+      message: tx(
         uiLanguage,
         '将为该项目下所有已写章节重新生成 Embedding，会消耗一定 API 额度。继续？',
         'This will re-embed every written chapter in this project and consume API quota. Continue?'
-      )
-    );
+      ),
+    });
     if (!confirmed) return;
 
     setIsRebuilding(true);
@@ -495,7 +564,7 @@ export function SettingsPage() {
 
   const saveSettings = () => {
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
-      alert(
+      notify(
         tx(
           uiLanguage,
           '请完整填写当前平台配置：API Key、API URL、模型、Temperature',
@@ -510,7 +579,7 @@ export function SettingsPage() {
       normalizedProfiles.find((profile) => profile.id === localActiveProfileId) ||
       normalizedProfiles[0];
     if (!normalizedActive) {
-      alert(tx(uiLanguage, '未找到可用平台配置', 'No available platform configuration found'));
+      notify(tx(uiLanguage, '未找到可用平台配置', 'No available platform configuration found'));
       return;
     }
 
@@ -525,13 +594,13 @@ export function SettingsPage() {
     setSummariesEnabled(localSummariesEnabled);
     setEntitiesEnabled(localEntitiesEnabled);
 
-    alert(tx(uiLanguage, '设置已保存', 'Settings saved'));
+    notify(tx(uiLanguage, '设置已保存', 'Settings saved'));
   };
 
   const buildAllChapterSummaries = async () => {
     if (!rebuildProjectId) return;
     if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
-      alert(
+      notify(
         tx(uiLanguage,
           '请先填写并保存 Embedding 配置',
           'Please fill in and save Embedding configuration first')
@@ -539,18 +608,19 @@ export function SettingsPage() {
       return;
     }
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
-      alert(
+      notify(
         tx(uiLanguage,
           '请先完整配置文本模型平台',
           'Please complete a text model platform first')
       );
       return;
     }
-    const confirmed = window.confirm(
-      tx(uiLanguage,
+    const confirmed = await uiConfirm({
+      title: tx(uiLanguage, '生成全部章节摘要', 'Build all chapter summaries'),
+      message: tx(uiLanguage,
         '将为该项目下所有正文 >200 字的章节生成 ~150 字摘要，按文本模型平台计费。继续？',
-        'This will generate ~150-char summaries for every chapter with >200 chars of content, billed via your text model platform. Continue?')
-    );
+        'This will generate ~150-char summaries for every chapter with >200 chars of content, billed via your text model platform. Continue?'),
+    });
     if (!confirmed) return;
 
     setIsBuildingChapterSummaries(true);
@@ -600,11 +670,18 @@ export function SettingsPage() {
 
   // ── Backup / Restore handlers ───────────────────────────────
 
-  const handleExportBackup = () => {
+  const handleExportBackup = async () => {
     const state = useAppStore.getState() as any;
     const data: Record<string, unknown> = {};
-    for (const k of PROJECT_MAP_FIELDS) {
-      if (state[k]) data[k] = state[k];
+
+    // All per-project maps (incl. new mechanisms ported from Android: containers / volumes /
+    // character growth) — detected dynamically so future maps are picked up automatically.
+    for (const k of collectByProjectKeys(state)) {
+      const v = state[k];
+      if (v && typeof v === 'object' && Object.keys(v).length > 0) data[k] = v;
+    }
+    if (state.promoByChapter && Object.keys(state.promoByChapter).length > 0) {
+      data.promoByChapter = state.promoByChapter;
     }
     if (Array.isArray(state.folders) && state.folders.length > 0) {
       data.folders = state.folders;
@@ -613,14 +690,72 @@ export function SettingsPage() {
       if (state[k] !== undefined) data[k] = state[k];
     }
 
+    // Novel-chat history → Android-compatible top-level `novelChats` (pid → messages[]).
+    if (state.novelChatsByProject && Object.keys(state.novelChatsByProject).length > 0) {
+      data.novelChats = state.novelChatsByProject;
+    }
+
+    // Full novel content from SQLite, split into the Android `buildBackupBundle` shape:
+    //   projects[] + chaptersByProject{} (metadata) + chapterBodies{} + chapterIllustrations{}
+    // so the file restores completely on a fresh device and is importable on Android too.
+    try {
+      const content = await projectApi.exportContent();
+      if (content.projects.length > 0) data.projects = content.projects;
+
+      const chaptersByProject: Record<string, unknown[]> = {};
+      const chapterBodies: Record<string, { draft: string; final: string }> = {};
+      const chapterIllustrations: Record<string, unknown[]> = {};
+
+      for (const c of content.chapters) {
+        (chaptersByProject[c.project_id] ||= []).push({
+          id: c.id,
+          project_id: c.project_id,
+          title: c.title,
+          order_index: c.order_index,
+          outline_goal: c.outline_goal ?? null,
+          conflict: c.conflict ?? null,
+          twist: c.twist ?? null,
+          cliffhanger: c.cliffhanger ?? null,
+          word_count: c.word_count,
+          status: c.status,
+          created_at: c.created_at,
+          updated_at: c.updated_at,
+          arcId: c.arc_id ?? null,
+        });
+        if ((c.draft_text && c.draft_text.length > 0) || (c.final_text && c.final_text.length > 0)) {
+          chapterBodies[c.id] = { draft: c.draft_text || '', final: c.final_text || '' };
+        }
+        if (c.illustrations) {
+          try {
+            const arr = JSON.parse(c.illustrations);
+            if (Array.isArray(arr) && arr.length > 0) chapterIllustrations[c.id] = arr;
+          } catch {
+            /* ignore malformed illustrations JSON */
+          }
+        }
+      }
+      if (Object.keys(chaptersByProject).length > 0) data.chaptersByProject = chaptersByProject;
+      if (Object.keys(chapterBodies).length > 0) data.chapterBodies = chapterBodies;
+      if (Object.keys(chapterIllustrations).length > 0) {
+        data.chapterIllustrations = chapterIllustrations;
+      }
+    } catch (err) {
+      console.warn('[Backup] export novel content failed (metadata still exported):', err);
+    }
+
     const bundle: BackupBundle = {
       version: BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
-      appVersion: '1.4.0',
+      appVersion: '2.0.0',
       data,
     };
 
-    const json = JSON.stringify(bundle, null, 2);
+    // Deep-clone (decouple from live store), then convert images to RAW base64 — the format the
+    // Android app expects — so the file imports correctly on Android too.
+    const fileBundle = JSON.parse(JSON.stringify(bundle)) as BackupBundle;
+    normalizeBackupImages(fileBundle.data, 'toRaw');
+
+    const json = JSON.stringify(fileBundle, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -669,57 +804,148 @@ export function SettingsPage() {
     input.click();
   };
 
-  const handleConfirmImport = () => {
-    if (!importPreview) return;
-    const incoming = importPreview.file.data;
-    const state = useAppStore.getState() as any;
-    const next: Record<string, unknown> = {};
+  const handleConfirmImport = async () => {
+    if (!importPreview || isImporting) return;
+    setIsImporting(true);
+    setBackupStatus(tx(uiLanguage, '正在导入…', 'Importing…'));
+    // Whole body is guarded so any failure surfaces a message instead of silently doing nothing.
+    try {
+      const incoming = importPreview.file.data;
+      // Android stores raw base64; PC renders data URLs. Convert image fields in place (the parsed
+      // backup object is discarded after import, so mutating it is safe).
+      normalizeBackupImages(incoming, 'toDataUrl');
+      const state = useAppStore.getState() as any;
+      const next: Record<string, unknown> = {};
 
-    // Per-project maps: merge by key, import wins on conflict.
-    for (const k of PROJECT_MAP_FIELDS) {
-      const inc = incoming[k];
-      if (inc && typeof inc === 'object') {
-        next[k] = { ...(state[k] || {}), ...(inc as Record<string, unknown>) };
+      // Per-project maps (incl. new mechanisms): merge by key, import wins on conflict.
+      for (const k of collectByProjectKeys(incoming)) {
+        const inc = incoming[k];
+        if (inc && typeof inc === 'object') {
+          next[k] = { ...(state[k] || {}), ...(inc as Record<string, unknown>) };
+        }
       }
-    }
+      // promoByChapter: merge by chapter id, import wins.
+      if (incoming.promoByChapter && typeof incoming.promoByChapter === 'object') {
+        next.promoByChapter = {
+          ...(state.promoByChapter || {}),
+          ...(incoming.promoByChapter as Record<string, unknown>),
+        };
+      }
 
-    // Folders: merge by id, import wins.
-    if (Array.isArray(incoming.folders)) {
-      const map = new Map<string, unknown>();
-      for (const f of (state.folders as { id: string }[]) || []) map.set(f.id, f);
-      for (const f of incoming.folders as { id: string }[]) map.set(f.id, f);
-      next.folders = Array.from(map.values());
-    }
-
-    // App settings — only if user opted in.
-    if (importIncludeAppSettings) {
-      if (Array.isArray(incoming.textModelProfiles)) {
+      // Folders: merge by id, import wins.
+      if (Array.isArray(incoming.folders)) {
         const map = new Map<string, unknown>();
-        for (const p of (state.textModelProfiles as { id: string }[]) || []) map.set(p.id, p);
-        for (const p of incoming.textModelProfiles as { id: string }[]) map.set(p.id, p);
-        next.textModelProfiles = Array.from(map.values());
+        for (const f of (state.folders as { id: string }[]) || []) {
+          if (f && typeof f === 'object' && f.id) map.set(f.id, f);
+        }
+        for (const f of incoming.folders as { id: string }[]) {
+          if (f && typeof f === 'object' && f.id) map.set(f.id, f);
+        }
+        next.folders = Array.from(map.values());
       }
-      for (const k of APP_SETTINGS_FIELDS) {
-        if (k === 'textModelProfiles') continue;
-        if (incoming[k] !== undefined) next[k] = incoming[k];
+
+      // Novel-chat history (Android top-level `novelChats`, pid → messages[]): merge by project.
+      if (incoming.novelChats && typeof incoming.novelChats === 'object') {
+        next.novelChatsByProject = {
+          ...(state.novelChatsByProject || {}),
+          ...(incoming.novelChats as Record<string, unknown>),
+        };
       }
+
+      // App settings — only if user opted in.
+      if (importIncludeAppSettings) {
+        if (Array.isArray(incoming.textModelProfiles)) {
+          const map = new Map<string, unknown>();
+          for (const p of (state.textModelProfiles as { id: string }[]) || []) {
+            if (p && typeof p === 'object' && p.id) map.set(p.id, p);
+          }
+          for (const p of incoming.textModelProfiles as { id: string }[]) {
+            if (p && typeof p === 'object' && p.id) map.set(p.id, p);
+          }
+          next.textModelProfiles = Array.from(map.values());
+        }
+        for (const k of APP_SETTINGS_FIELDS) {
+          if (k === 'textModelProfiles') continue;
+          if (incoming[k] !== undefined) next[k] = incoming[k];
+        }
+      }
+
+      useAppStore.setState(next as any);
+
+      // Reconstruct whole projects + chapters (text bodies + illustrations) into the SQLite DB.
+      let importedProjects = 0;
+      const projects = Array.isArray(incoming.projects)
+        ? (incoming.projects as Record<string, unknown>[])
+        : [];
+      const chaptersByProject = (incoming.chaptersByProject as Record<string, unknown[]>) || {};
+      const chapterBodies =
+        (incoming.chapterBodies as Record<string, { draft?: string; final?: string }>) || {};
+      const chapterIllustrations =
+        (incoming.chapterIllustrations as Record<string, unknown[]>) || {};
+
+      const chapters: ImportChapterFull[] = [];
+      for (const [pid, list] of Object.entries(chaptersByProject)) {
+        if (!Array.isArray(list)) continue;
+        for (const raw of list) {
+          const m = raw as Record<string, any>;
+          if (!m || typeof m.id !== 'string') continue;
+          const body = chapterBodies[m.id] || {};
+          const illus = chapterIllustrations[m.id];
+          chapters.push({
+            id: m.id,
+            // The chaptersByProject map key is the authoritative owner — a chapter's own
+            // project_id field can be stale (pointing at a deleted project → FK failure).
+            project_id: pid || (typeof m.project_id === 'string' ? m.project_id : ''),
+            title: m.title ?? '',
+            order_index: Number(m.order_index) || 0,
+            outline_goal: m.outline_goal ?? null,
+            conflict: m.conflict ?? null,
+            twist: m.twist ?? null,
+            cliffhanger: m.cliffhanger ?? null,
+            draft_text: body.draft ?? null,
+            final_text: body.final ?? null,
+            illustrations:
+              Array.isArray(illus) && illus.length > 0 ? JSON.stringify(illus) : null,
+            word_count: Number(m.word_count) || 0,
+            status: m.status ?? null,
+            created_at: m.created_at ?? null,
+            updated_at: m.updated_at ?? null,
+            arc_id: m.arcId ?? m.arc_id ?? null,
+          });
+        }
+      }
+
+      if (projects.length > 0 || chapters.length > 0) {
+        console.info(`[Backup] importing ${projects.length} projects, ${chapters.length} chapters`);
+        await projectApi.importContent({ projects, chapters });
+        importedProjects = projects.length;
+        // Refresh the in-memory project list so Home / Long-novel lists update immediately.
+        const all = await projectApi.getAll();
+        useAppStore.getState().setProjects(all);
+      }
+
+      const merged = importPreview.summary.projectIdsInBackup;
+      setImportPreview(null);
+      setBackupStatus(
+        tx(uiLanguage,
+          `导入完成：合并了 ${merged} 个项目${importedProjects > 0 ? `（其中 ${importedProjects} 本正文已写入书库）` : ''}。${importIncludeAppSettings ? '应用设置已覆盖。' : ''}建议刷新页面以确保 UI 同步。`,
+          `Import done: merged ${merged} projects${importedProjects > 0 ? ` (${importedProjects} written to the library)` : ''}.${importIncludeAppSettings ? ' App settings overwritten.' : ''} Reload the page to make sure the UI is in sync.`)
+      );
+    } catch (err) {
+      console.error('[Backup] import failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setBackupStatus(
+        tx(uiLanguage, `导入失败：${msg}`, `Import failed: ${msg}`)
+      );
+    } finally {
+      setIsImporting(false);
     }
-
-    useAppStore.setState(next as any);
-
-    const merged = importPreview.summary.projectIdsInBackup;
-    setImportPreview(null);
-    setBackupStatus(
-      tx(uiLanguage,
-        `导入完成：合并了 ${merged} 个项目的元数据。${importIncludeAppSettings ? '应用设置已覆盖。' : ''}请刷新页面以确保 UI 同步。`,
-        `Import done: merged metadata for ${merged} projects.${importIncludeAppSettings ? ' App settings overwritten.' : ''} Reload the page to make sure the UI is in sync.`)
-    );
   };
 
   const buildBookSummary = async () => {
     if (!rebuildProjectId) return;
     if (!isEmbeddingConfigValid(localEmbeddingConfig)) {
-      alert(
+      notify(
         tx(
           uiLanguage,
           '请先填写并保存 Embedding 配置',
@@ -729,7 +955,7 @@ export function SettingsPage() {
       return;
     }
     if (!activeProfile || !isProfileConfigValid(activeProfile)) {
-      alert(
+      notify(
         tx(
           uiLanguage,
           '请先完整配置文本模型平台',
@@ -1602,10 +1828,10 @@ export function SettingsPage() {
             )}
 
             <div className="flex gap-2 justify-end pt-2">
-              <Button variant="outline" onClick={() => setImportPreview(null)}>
+              <Button variant="outline" onClick={() => setImportPreview(null)} disabled={isImporting}>
                 {tx(uiLanguage, '取消', 'Cancel')}
               </Button>
-              <Button onClick={handleConfirmImport}>
+              <Button onClick={handleConfirmImport} loading={isImporting} disabled={isImporting}>
                 {tx(uiLanguage, '确认导入', 'Confirm')}
               </Button>
             </div>

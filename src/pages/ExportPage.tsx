@@ -760,7 +760,7 @@ ${navPoints}
 
 export function ExportPage() {
   const { id } = useParams<{ id: string }>();
-  const smartBack = useSmartBack(id ? `/project/${id}` : '/');
+  const smartBack = useSmartBack(id ? `/project/${id}` : '/short-novels');
   const { uiLanguage, promoByChapter } = useAppStore((state) => ({
     uiLanguage: state.uiLanguage,
     promoByChapter: state.promoByChapter,

@@ -80,6 +80,14 @@ pub struct CharacterPortraitPromptResult {
     pub image_prompt: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AiChatInput {
+    #[serde(default)]
+    pub system: Option<String>,
+    pub user: String,
+    pub text_config: TextModelConfigInput,
+}
+
 fn build_text_service(config: &TextModelConfigInput) -> Result<GenerationService, String> {
     config.validate()?;
 
@@ -153,6 +161,18 @@ pub async fn generate_revision(input: GenerateRevisionInput) -> Result<String, S
 
     service
         .generate_revision(&input.text, &goals)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Generic single-shot chat completion (system + user) — the primitive behind the ported
+/// Android features: container/growth per-chapter AI updates and novel-chat answering.
+#[tauri::command]
+pub async fn ai_chat(input: AiChatInput) -> Result<String, String> {
+    let service = build_text_service(&input.text_config)?;
+
+    service
+        .chat(input.system.as_deref().unwrap_or(""), &input.user)
         .await
         .map_err(|e| e.to_string())
 }

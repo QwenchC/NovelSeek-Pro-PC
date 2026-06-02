@@ -97,6 +97,16 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             .execute(pool)
             .await?;
     }
+    // The 剧情弧线 (PlotArc) a chapter belongs to — preserved for round-trip with the Android
+    // backup (which stores `Chapter.arcId`).
+    let has_arc_id = chapter_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "arc_id");
+    if !has_arc_id {
+        sqlx::query("ALTER TABLE chapters ADD COLUMN arc_id TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     // Characters table
     sqlx::query(

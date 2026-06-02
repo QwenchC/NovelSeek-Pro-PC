@@ -47,6 +47,7 @@ pub struct Chapter {
     pub status: String, // draft, review, final
     pub created_at: String,
     pub updated_at: String,
+    pub arc_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +67,66 @@ pub struct UpdateChapterMetaInput {
     pub conflict: Option<String>,
     pub twist: Option<String>,
     pub cliffhanger: Option<String>,
+    #[serde(default)]
+    pub arc_id: Option<String>,
+}
+
+// ── Backup import/export (full PC↔Android backup compatibility) ──────────────
+// `import_novel_content` upserts whole projects + chapters (text bodies + illustrations) read
+// from an Android-style backup; `export_novel_content` reads them back so the PC backup can
+// embed the same `projects` / chapter content the Android backup carries.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportProject {
+    pub id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub genre: Option<String>,
+    pub description: Option<String>,
+    pub language: Option<String>,
+    pub target_word_count: Option<i64>,
+    #[serde(default)]
+    pub current_word_count: i64,
+    pub status: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub cover_images: Option<String>,
+    pub default_cover_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportChapter {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub order_index: i32,
+    pub outline_goal: Option<String>,
+    pub conflict: Option<String>,
+    pub twist: Option<String>,
+    pub cliffhanger: Option<String>,
+    pub draft_text: Option<String>,
+    pub final_text: Option<String>,
+    pub illustrations: Option<String>,
+    #[serde(default)]
+    pub word_count: i64,
+    pub status: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub arc_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportContentInput {
+    #[serde(default)]
+    pub projects: Vec<ImportProject>,
+    #[serde(default)]
+    pub chapters: Vec<ImportChapter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportContent {
+    pub projects: Vec<Project>,
+    pub chapters: Vec<Chapter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -105,6 +166,15 @@ pub struct Snapshot {
     pub target_id: String,
     pub content: String,
     pub content_hash: String,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+/// Lightweight snapshot row for listing (omits the heavy `content` JSON).
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SnapshotMeta {
+    pub id: String,
+    pub target_id: String,
     pub note: Option<String>,
     pub created_at: String,
 }

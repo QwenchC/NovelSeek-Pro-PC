@@ -1,25 +1,121 @@
 import { useState, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import type { Character, CharacterRelationship, CharacterEvent, PlotArc } from '@store/index';
+import type { Character, CharacterRelationship, CharacterEvent, PlotArc, CharacterGrowthEntry } from '@store/index';
 import { Button } from '@components/Button';
+import { uiConfirm } from '@components/uiDialog';
 import {
   ArrowLeft, Plus, Edit2, Trash2, Users, Network,
-  Clock, Save, X, Star, ChevronDown, ChevronUp, Sparkles, StopCircle,
+  Clock, Save, X, Star, ChevronDown, ChevronUp, Sparkles, StopCircle, Sprout,
 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
 import { buildRealmSystemContext } from '@utils/cultivation';
+
+/** A portrait may be a full data URL (newly generated / normalized import) or raw base64 (legacy /
+ *  Android import). Return a directly-usable <img src>; never double-prefix. */
+function portraitSrc(b64?: string | null): string {
+  if (!b64) return '';
+  return /^(data:|https?:|blob:)/.test(b64) ? b64 : `data:image/png;base64,${b64}`;
+}
+
 // ── AI output parsers ─────────────────────────────────────────────
+/**
+ * Extract every COMPLETE top-level `{...}` object from a (possibly truncated) JSON-ish blob.
+ * Tracks string/escape state and brace depth, so a cut-off trailing object (common when the model
+ * hits its token limit) is simply dropped while all preceding complete objects are recovered.
+ */
+function extractJsonObjects(text: string): any[] {
+  const out: any[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') { if (depth === 0) start = i; depth++; }
+    else if (ch === '}') {
+      if (depth > 0) depth--;
+      if (depth === 0 && start >= 0) {
+        try { out.push(JSON.parse(text.slice(start, i + 1))); } catch { /* skip */ }
+        start = -1;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse characters from the AI's outline analysis. Prefers a rich JSON array (name / gender /
+ * isProtagonist / role / personality / motivation / background / appearance, each detailed —
+ * mirrors the Android app); recovers complete objects even if the JSON was truncated; falls back
+ * to the legacy pipe-delimited format.
+ */
+/**
+ * Last-resort tolerant extractor for malformed JSON (e.g. a key missing its opening quote, an
+ * unclosed trailing object). Splits into per-character blocks at each `name` key and pulls each
+ * field with a quote-optional regex, so a partially-corrupt stream still yields usable characters.
+ */
+function parseCharsTolerant(text: string): Omit<Character, 'id'>[] {
+  const fieldVal = (block: string, key: string): string => {
+    const m = block.match(new RegExp(`"?${key}"?\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 'i'));
+    return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, ' ').trim() : '';
+  };
+  const starts: number[] = [];
+  const nameRe = /"?name"?\s*:\s*"/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = nameRe.exec(text))) starts.push(mm.index);
+  const out: Omit<Character, 'id'>[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const block = text.slice(starts[i], starts[i + 1] ?? text.length);
+    const name = fieldVal(block, 'name');
+    if (!name) continue;
+    out.push({
+      name,
+      gender: fieldVal(block, 'gender'),
+      role: fieldVal(block, 'role'),
+      personality: fieldVal(block, 'personality'),
+      motivation: fieldVal(block, 'motivation'),
+      background: fieldVal(block, 'background'),
+      appearance: fieldVal(block, 'appearance'),
+      isProtagonist: /"?isProtagonist"?\s*:\s*(?:"?true"?|1)/i.test(block),
+    });
+  }
+  return out;
+}
+
 function parseCharactersFromAI(text: string): Omit<Character, 'id'>[] {
+  const s = (v: unknown): string => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim());
+  const stripped = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+  const objs = extractJsonObjects(stripped).filter((o) => o && typeof o.name === 'string' && o.name.trim());
+  if (objs.length) {
+    return objs.map((o) => ({
+      name: s(o.name),
+      gender: s(o.gender),
+      role: s(o.role),
+      personality: s(o.personality),
+      motivation: s(o.motivation),
+      background: s(o.background),
+      appearance: s(o.appearance),
+      isProtagonist: o.isProtagonist === true || s(o.isProtagonist).toLowerCase() === 'true',
+    }));
+  }
+  // Tolerant pass for malformed/corrupt JSON (recovers what it can).
+  const tol = parseCharsTolerant(stripped);
+  if (tol.length) return tol;
+  // Legacy pipe-delimited fallback: name | gender | role | personality | motivation | background
   const result: Omit<Character, 'id'>[] = [];
   for (const line of text.split('\n')) {
     const raw = line.replace(/^[-*\d.\s]+/, '').trim();
     if (!raw.includes('|')) continue;
     const [name = '', gender = '', role = '', personality = '', motivation = '', background = ''] =
-      raw.split('|').map((s) => s.trim());
+      raw.split('|').map((x) => x.trim());
     if (!name) continue;
     result.push({ name, gender, role, personality, motivation, background, appearance: '', isProtagonist: false });
   }
@@ -106,7 +202,7 @@ export function LongNovelCharactersPage() {
     getPlotArcs,
   } = useAppStore();
 
-  const [activeTab, setActiveTab] = useState<'characters' | 'network' | 'events'>('characters');
+  const [activeTab, setActiveTab] = useState<'characters' | 'network' | 'events' | 'growth'>('characters');
   const [editingChar, setEditingChar] = useState<Character | null>(null);
   const [showCharForm, setShowCharForm] = useState(false);
 
@@ -115,9 +211,10 @@ export function LongNovelCharactersPage() {
   const events: CharacterEvent[] = id ? getCharacterEvents(id) : [];
   const arcs: PlotArc[] = id ? getPlotArcs(id) : [];
 
-  const handleDeleteChar = (charId: string) => {
+  const handleDeleteChar = async (charId: string) => {
     if (!id) return;
-    if (!window.confirm(tx(uiLanguage, '确定删除此角色？相关关系和事件也会一并删除。', 'Delete this character? Related relationships and events will also be removed.'))) return;
+    const ok = await uiConfirm({ title: tx(uiLanguage, '删除角色', 'Delete character'), message: tx(uiLanguage, '确定删除此角色？相关关系和事件也会一并删除。', 'Delete this character? Related relationships and events will also be removed.'), danger: true });
+    if (!ok) return;
     setCharacters(id, characters.filter((c) => c.id !== charId));
     // Remove related relationships
     const updated = relationships.filter((r) => r.fromCharId !== charId && r.toCharId !== charId);
@@ -125,7 +222,7 @@ export function LongNovelCharactersPage() {
   };
 
   return (
-    <div className="w-full max-w-6xl mx-auto space-y-4">
+    <div className="w-full max-w-[1700px] mx-auto space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3">
         <button
@@ -145,6 +242,7 @@ export function LongNovelCharactersPage() {
           { key: 'characters', label: tx(uiLanguage, '角色列表', 'Characters'), icon: Users },
           { key: 'network', label: tx(uiLanguage, '关系网络', 'Relationship Network'), icon: Network },
           { key: 'events', label: tx(uiLanguage, '事件时间线', 'Event Timeline'), icon: Clock },
+          { key: 'growth', label: tx(uiLanguage, '成长路线', 'Growth'), icon: Sprout },
         ] as { key: string; label: string; icon: React.ComponentType<{ className?: string }> }[]).map((tab) => {
           const Icon = tab.icon;
           return (
@@ -210,6 +308,10 @@ export function LongNovelCharactersPage() {
             ]);
           }}
         />
+      )}
+
+      {activeTab === 'growth' && id && (
+        <CharacterGrowthTab characters={characters} uiLanguage={uiLanguage} projectId={id} />
       )}
 
       {/* Character form modal */}
@@ -406,13 +508,13 @@ function CharactersTab({
               <div className="flex items-start gap-3">
                 {char.portraitBase64 ? (
                   <img
-                    src={`data:image/png;base64,${char.portraitBase64}`}
-                    className="w-12 h-12 rounded-full object-cover flex-shrink-0"
+                    src={portraitSrc(char.portraitBase64)}
+                    className="w-20 h-28 rounded-lg object-cover flex-shrink-0 border border-gray-200 dark:border-gray-700 ring-1 ring-black/5 shadow-sm bg-gray-50 dark:bg-gray-900"
                     alt={char.name}
                   />
                 ) : (
-                  <div className="w-12 h-12 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center flex-shrink-0">
-                    <span className="text-lg font-bold text-purple-600 dark:text-purple-400">
+                  <div className="w-20 h-28 rounded-lg bg-gradient-to-br from-purple-100 to-purple-50 dark:from-purple-900/30 dark:to-purple-900/10 flex items-center justify-center flex-shrink-0 border border-gray-200 dark:border-gray-700 ring-1 ring-black/5 shadow-sm">
+                    <span className="text-3xl font-bold text-purple-400 dark:text-purple-500">
                       {char.name.charAt(0)}
                     </span>
                   </div>
@@ -612,8 +714,9 @@ function RelationshipNetworkTab({
     resetForm();
   };
 
-  const handleDeleteRel = (relId: string) => {
-    if (!window.confirm(tx(uiLanguage, '删除此关系？', 'Delete this relationship?'))) return;
+  const handleDeleteRel = async (relId: string) => {
+    const ok = await uiConfirm({ title: tx(uiLanguage, '删除关系', 'Delete relationship'), message: tx(uiLanguage, '删除此关系？', 'Delete this relationship?'), danger: true });
+    if (!ok) return;
     setCharacterRelationships(relationships.filter((r) => r.id !== relId));
   };
 
@@ -1264,6 +1367,198 @@ function EventTimelineTab({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Character Growth Tab (成长路线) ────────────────────────────
+// Mirrors Android `characterGrowthByProject` — a per-character chain of growth entries (oldest →
+// newest). The latest entries are injected into chapter generation as soft guidance (see
+// LongNovelEditorPage), and AI auto-appends a new entry after each chapter save when enabled.
+function CharacterGrowthTab({
+  characters, uiLanguage, projectId,
+}: {
+  characters: Character[];
+  uiLanguage: 'zh' | 'en';
+  projectId: string;
+}) {
+  const { getCharacterGrowth, setCharacterGrowth, appendCharacterGrowth } = useAppStore();
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<{ charId: string; entryId: string } | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const toggle = (charId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(charId)) next.delete(charId);
+      else next.add(charId);
+      return next;
+    });
+  };
+
+  const addEntry = (charId: string) => {
+    const value = (draft[charId] || '').trim();
+    if (!value) return;
+    appendCharacterGrowth(projectId, charId, {
+      id: `growth-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      value,
+      createdAt: new Date().toISOString(),
+      manual: true,
+    });
+    setDraft((prev) => ({ ...prev, [charId]: '' }));
+    setExpanded((prev) => new Set(prev).add(charId));
+  };
+
+  const saveEdit = (charId: string, entries: CharacterGrowthEntry[]) => {
+    if (!editing) return;
+    setCharacterGrowth(
+      projectId,
+      charId,
+      entries.map((e) => (e.id === editing.entryId ? { ...e, value: editValue, manual: true } : e))
+    );
+    setEditing(null);
+    setEditValue('');
+  };
+
+  const deleteEntry = (charId: string, entries: CharacterGrowthEntry[], entryId: string) => {
+    setCharacterGrowth(projectId, charId, entries.filter((e) => e.id !== entryId));
+  };
+
+  if (characters.length === 0) {
+    return (
+      <div className="text-center py-12 text-gray-400">
+        <Sprout className="w-10 h-10 mx-auto opacity-40 mb-2" />
+        <p className="text-sm">{tx(uiLanguage, '请先在角色列表中添加角色', 'Add characters first in the Characters tab')}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        {tx(
+          uiLanguage,
+          '记录每个角色逐章的成长变化。最新条目会作为软性指引注入章节生成；开启容器自动更新后，写完章节会自动追加新条目。',
+          "Track each character's per-chapter development. The latest entry is injected into chapter generation as soft guidance; new entries are auto-appended after writing a chapter when enabled."
+        )}
+      </p>
+      <div className="space-y-3">
+        {characters.map((char) => {
+          const entries = getCharacterGrowth(projectId, char.id);
+          const isExpanded = expanded.has(char.id);
+          const latest = entries[entries.length - 1];
+          return (
+            <div key={char.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <button
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                onClick={() => toggle(char.id)}
+              >
+                <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
+                  <span className="text-sm font-bold text-green-600 dark:text-green-400">{char.name.charAt(0)}</span>
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <span className="font-medium text-gray-900 dark:text-white text-sm">{char.name}</span>
+                  {!isExpanded && latest && (
+                    <p className="text-xs text-gray-500 truncate">{latest.value}</p>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400 flex-shrink-0">
+                  {entries.length} {tx(uiLanguage, '条', 'entries')}
+                </span>
+                {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+              </button>
+              {isExpanded && (
+                <div className="border-t border-gray-100 dark:border-gray-700 p-3 space-y-3">
+                  {entries.length === 0 ? (
+                    <p className="text-center py-2 text-xs text-gray-400">{tx(uiLanguage, '暂无成长记录', 'No growth entries yet')}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {entries.map((entry, idx) => (
+                        <div key={entry.id} className="flex items-start gap-3">
+                          <div className="flex flex-col items-center flex-shrink-0 mt-1">
+                            <div className={`w-2 h-2 rounded-full ${idx === entries.length - 1 ? 'bg-green-500' : 'bg-green-300'}`} />
+                            {idx < entries.length - 1 && <div className="w-0.5 h-full min-h-[20px] bg-green-200 dark:bg-green-800 mt-1" />}
+                          </div>
+                          <div className="flex-1 min-w-0 pb-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {entry.chapterOrder != null && (
+                                <span className="text-xs text-gray-400">
+                                  {tx(uiLanguage, `第${entry.chapterOrder}章`, `Ch.${entry.chapterOrder}`)}
+                                  {entry.chapterTitle ? ` · ${entry.chapterTitle}` : ''}
+                                </span>
+                              )}
+                              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                                entry.manual
+                                  ? 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                                  : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                              }`}>
+                                {entry.manual ? tx(uiLanguage, '手动', 'Manual') : tx(uiLanguage, 'AI', 'AI')}
+                              </span>
+                            </div>
+                            {editing && editing.charId === char.id && editing.entryId === entry.id ? (
+                              <div className="mt-1 space-y-2">
+                                <textarea
+                                  value={editValue}
+                                  onChange={(e) => setEditValue(e.target.value)}
+                                  className="w-full px-2.5 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-20 resize-none focus:outline-none focus:ring-2 focus:ring-green-500"
+                                />
+                                <div className="flex gap-2">
+                                  <button onClick={() => saveEdit(char.id, entries)} className="text-xs px-2.5 py-1 rounded bg-green-600 text-white hover:bg-green-700">{tx(uiLanguage, '保存', 'Save')}</button>
+                                  <button onClick={() => { setEditing(null); setEditValue(''); }} className="text-xs px-2.5 py-1 rounded bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200">{tx(uiLanguage, '取消', 'Cancel')}</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-700 dark:text-gray-300 mt-0.5 whitespace-pre-wrap">{entry.value}</p>
+                            )}
+                          </div>
+                          {!(editing && editing.entryId === entry.id) && (
+                            <div className="flex gap-1 flex-shrink-0">
+                              <button
+                                onClick={() => { setEditing({ charId: char.id, entryId: entry.id }); setEditValue(entry.value); }}
+                                className="p-1 text-gray-300 hover:text-blue-500 transition-colors"
+                                title={tx(uiLanguage, '编辑', 'Edit')}
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => deleteEntry(char.id, entries, entry.id)}
+                                className="p-1 text-gray-300 hover:text-red-500 transition-colors"
+                                title={tx(uiLanguage, '删除', 'Delete')}
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Add manual entry */}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={draft[char.id] || ''}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, [char.id]: e.target.value }))}
+                      onKeyDown={(e) => { if (e.key === 'Enter') addEntry(char.id); }}
+                      placeholder={tx(uiLanguage, '手动添加一条成长记录…', 'Add a growth entry manually…')}
+                      className="flex-1 px-2.5 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500"
+                    />
+                    <button
+                      onClick={() => addEntry(char.id)}
+                      disabled={!(draft[char.id] || '').trim()}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-40"
+                    >
+                      <Plus className="w-3.5 h-3.5 inline mr-0.5" />
+                      {tx(uiLanguage, '添加', 'Add')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

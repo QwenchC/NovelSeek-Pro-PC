@@ -1,4 +1,4 @@
-# NovelSeek Pro - 开发指南
+# NovelSeek Ultra - 开发指南
 
 ## 本地开发环境配置
 
@@ -20,7 +20,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ```bash
 git clone <your-repo-url>
-cd NovelSeek-Pro-PC
+cd NovelSeek-Ultra-PC
 ```
 
 ### 4. 安装依赖

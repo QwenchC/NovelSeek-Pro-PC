@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAppStore } from '@store/index';
-import type { Character, PlotArc } from '@store/index';
+import type { Character, PlotArc, Volume } from '@store/index';
 import { projectApi } from '@services/api';
 import { Button } from '@components/Button';
 import {
   ArrowLeft, Sparkles, StopCircle, Save, Plus, Layers, RefreshCw,
   ChevronDown, ChevronUp, Edit2, Edit3, Trash2, GripVertical, CheckSquare, Square, Check,
+  Library, FolderPlus,
 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
@@ -15,6 +16,9 @@ import remarkGfm from 'remark-gfm';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
 import { buildRealmSystemContext } from '@utils/cultivation';
+import { buildGenerationGuidance } from '@utils/containerAi';
+import { generateVolumes, generateArcsForVolume } from '@utils/volumeAi';
+import { VolumeEditModal } from '@components/VolumeEditModal';
 import { confirmDialog } from '@utils/index';
 
 // ── Section parser ─────────────────────────────────────────────
@@ -29,6 +33,7 @@ interface ParsedCharacter {
 interface ParsedOutlineSections {
   worldSetting?: string;
   timeline?: string;
+  volumes?: Array<{ name: string; description: string }>;
   arcs?: Array<{ title: string; summary: string }>;
   characters?: ParsedCharacter[];
 }
@@ -52,6 +57,23 @@ function extractSection(text: string, headers: string[]): string | undefined {
 function parseOutlineSections(outline: string): ParsedOutlineSections {
   const worldSetting = extractSection(outline, ['世界观概述', '世界观设定', 'World Overview', 'World Setting']);
   const timeline = extractSection(outline, ['时间线', '故事时间线', 'Timeline', 'Story Timeline']);
+
+  // 副本 (Volume) plan — mirrors Android's "## 副本规划" / "## Volume Plan" outline section.
+  const volumeBlocks: Array<{ name: string; description: string }> = [];
+  const volSection = extractSection(outline, ['副本规划', '副本', 'Volume Plan', 'Volumes']);
+  if (volSection) {
+    const volReZh = /#{2,4}\s+副本[^：:\n]*?[：:]\s*(.+?)(?:\n|$)([\s\S]*?)(?=\n#{2,4}|$)/g;
+    let vm: RegExpExecArray | null;
+    while ((vm = volReZh.exec(volSection)) !== null) {
+      volumeBlocks.push({ name: vm[1].trim(), description: vm[2].trim() });
+    }
+    if (!volumeBlocks.length) {
+      const volReEn = /#{2,4}\s+Volume\s+\d+[:：]?\s*(.+?)(?:\n|$)([\s\S]*?)(?=\n#{2,4}|$)/gi;
+      while ((vm = volReEn.exec(volSection)) !== null) {
+        volumeBlocks.push({ name: vm[1].trim(), description: vm[2].trim() });
+      }
+    }
+  }
 
   const arcBlocks: Array<{ title: string; summary: string }> = [];
   // Chinese arc pattern: ### 弧线N: title  (N can be digit, Chinese number, or [N])
@@ -107,6 +129,7 @@ function parseOutlineSections(outline: string): ParsedOutlineSections {
   return {
     worldSetting: worldSetting || undefined,
     timeline: timeline || undefined,
+    volumes: volumeBlocks.length > 0 ? volumeBlocks : undefined,
     arcs: arcBlocks.length > 0 ? arcBlocks : undefined,
     characters: charBlocks.length > 0 ? charBlocks.slice(0, 12) : undefined,
   };
@@ -148,6 +171,7 @@ function buildExistingContext(
 interface SaveSelection {
   overwriteWorld: boolean;
   overwriteTimeline: boolean;
+  overwriteVolumes: boolean;
   overwriteArcs: boolean;
   overwriteCharacters: boolean;
 }
@@ -175,12 +199,14 @@ function SaveOutlineDialog({
   const [sel, setSel] = useState<SaveSelection>({
     overwriteWorld: true,
     overwriteTimeline: true,
+    overwriteVolumes: true,
     overwriteArcs: true,
     overwriteCharacters: true,
   });
 
   const hasWorld = !!parsed.worldSetting;
   const hasTimeline = !!parsed.timeline;
+  const hasVolumes = (parsed.volumes?.length ?? 0) > 0;
   const hasArcs = (parsed.arcs?.length ?? 0) > 0;
   const hasChars = (parsed.characters?.length ?? 0) > 0;
 
@@ -273,6 +299,32 @@ function SaveOutlineDialog({
             </button>
           )}
 
+          {/* Volumes (副本) */}
+          {hasVolumes && (
+            <button
+              onClick={() => toggle('overwriteVolumes')}
+              className={`w-full flex items-start gap-3 p-3 rounded-xl border text-left transition-colors ${
+                sel.overwriteVolumes
+                  ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-600'
+                  : 'bg-gray-50 dark:bg-gray-700/50 border-gray-200 dark:border-gray-600 hover:border-blue-200'
+              }`}
+            >
+              {sel.overwriteVolumes
+                ? <CheckSquare className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                : <Square className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  {tx(uiLanguage, `创建副本（${parsed.volumes?.length} 个）`, `Create Volumes (${parsed.volumes?.length})`)}
+                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {parsed.volumes?.slice(0, 8).map((v, i) => (
+                    <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300">{v.name}</span>
+                  ))}
+                </div>
+              </div>
+            </button>
+          )}
+
           {/* Arcs */}
           {hasArcs && (
             <button
@@ -353,7 +405,7 @@ function SaveOutlineDialog({
             </button>
           )}
 
-          {!hasWorld && !hasTimeline && !hasArcs && !hasChars && (
+          {!hasWorld && !hasTimeline && !hasVolumes && !hasArcs && !hasChars && (
             <p className="text-sm text-gray-500 italic">
               {tx(uiLanguage, '未能从大纲中识别出可解析的结构化内容，仅保存文本', 'No parseable structured content found — only outline text will be saved')}
             </p>
@@ -387,6 +439,7 @@ export function LongNovelOutlinePage() {
     getPlotArcs, setPlotArcs, addPlotArc, updatePlotArc, deletePlotArc,
     getCharacters, setCharacters,
     getCultivationRealms, getCharacterRealmEvents,
+    getVolumes, setVolumes, ensureVolumes,
   } = useAppStore();
 
   const [worldSetting, setWorldSettingLocal] = useState('');
@@ -400,11 +453,17 @@ export function LongNovelOutlinePage() {
   const [showArcModal, setShowArcModal] = useState<{ mode: 'create' | 'edit'; arc?: PlotArc } | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [isEditingOutline, setIsEditingOutline] = useState(false);
+  // 副本 AI generation modal: generate volumes, or generate arcs inside a specific volume.
+  const [volGen, setVolGen] = useState<{ mode: 'volumes' } | { mode: 'arcs'; volume: Volume } | null>(null);
+  const [isVolGenerating, setIsVolGenerating] = useState(false);
+  const [volGenError, setVolGenError] = useState<string | null>(null);
+  const [editingVolume, setEditingVolume] = useState<Volume | null>(null);
 
   const cancelRef = useRef(false);
 
   const arcs = id ? getPlotArcs(id) : [];
   const sortedArcs = [...arcs].sort((a, b) => a.order - b.order);
+  const volumes = id ? getVolumes(id) : [];
 
   const hasValidTextConfig =
     textModelConfig.apiKey.trim().length > 0 &&
@@ -417,7 +476,124 @@ export function LongNovelOutlinePage() {
     setWorldSettingLocal(getWorldSetting(id));
     setTimelineLocal(getTimeline(id));
     setOutline(getLongNovelOutline(id));
+    // Wrap any legacy/orphan arcs into a 副本 so the volume grouping is always coherent.
+    ensureVolumes(id);
   }, [id]);
+
+  // ── 副本 (Volume) operations ──────────────────────────────────
+  const createVolume = () => {
+    if (!id) return;
+    const next: Volume = {
+      id: `vol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: tx(uiLanguage, `副本${volumes.length + 1}`, `Volume ${volumes.length + 1}`),
+      description: '',
+      order: volumes.length,
+      createdAt: new Date().toISOString(),
+    };
+    setVolumes(id, [...volumes, next]);
+    return next.id;
+  };
+
+  const saveVolumeEdit = (volumeId: string, name: string, description: string) => {
+    if (!id) return;
+    setVolumes(id, volumes.map((v) => (v.id === volumeId ? { ...v, name, description } : v)));
+  };
+
+  const deleteVolume = async (volumeId: string) => {
+    if (!id) return;
+    const confirmed = await confirmDialog(
+      tx(uiLanguage, '删除该副本？其下弧线会移动到其它副本，不会删除。', 'Delete this volume? Its arcs move to another volume (arcs are kept).'),
+      tx(uiLanguage, '删除副本', 'Delete Volume')
+    );
+    if (!confirmed) return;
+    const remaining = volumes.filter((v) => v.id !== volumeId);
+    const fallbackId = remaining[0]?.id;
+    // Re-home this volume's arcs to the first remaining volume (or leave unassigned if none left).
+    arcs
+      .filter((a) => a.volumeId === volumeId)
+      .forEach((a) => updatePlotArc(id, a.id, { volumeId: fallbackId }));
+    setVolumes(id, remaining.map((v, i) => ({ ...v, order: i })));
+  };
+
+  const moveArcToVolume = (arcId: string, volumeId: string) => {
+    if (!id) return;
+    updatePlotArc(id, arcId, { volumeId });
+  };
+
+  // Reference material handed to the 副本/弧线 generators (outline + world + timeline, capped).
+  const buildGenContext = (): string => {
+    const parts: string[] = [];
+    if (outline.trim()) parts.push(`${tx(uiLanguage, '【大纲】', '[Outline]')}\n${outline.slice(0, 3000)}`);
+    if (worldSetting.trim()) parts.push(`${tx(uiLanguage, '【世界观】', '[World]')}\n${worldSetting.slice(0, 1500)}`);
+    if (timeline.trim()) parts.push(`${tx(uiLanguage, '【时间线】', '[Timeline]')}\n${timeline.slice(0, 1000)}`);
+    return parts.join('\n\n');
+  };
+
+  const handleGenerateVolumes = async (count: number, reqs: string) => {
+    if (!id) return;
+    setIsVolGenerating(true);
+    setVolGenError(null);
+    try {
+      const existingVolumes = volumes.map((v) => `- ${v.name}：${v.description}`).join('\n');
+      const gen = await generateVolumes({
+        count, context: buildGenContext(), existingVolumes, requirements: reqs,
+        textConfig: textModelConfig, uiLanguage,
+      });
+      if (gen.length === 0) {
+        setVolGenError(tx(uiLanguage, 'AI 未返回有效副本，请重试或调整要求', 'AI returned no valid volumes — retry or adjust requirements'));
+        return;
+      }
+      const base = getVolumes(id);
+      const created: Volume[] = gen.map((v, i) => ({
+        id: `vol-${Date.now()}-${i}`,
+        name: v.name,
+        description: v.description,
+        order: base.length + i,
+        createdAt: new Date().toISOString(),
+      }));
+      setVolumes(id, [...base, ...created]);
+      setVolGen(null);
+    } catch (e) {
+      setVolGenError(typeof e === 'string' ? e : tx(uiLanguage, '生成失败', 'Generation failed'));
+    } finally {
+      setIsVolGenerating(false);
+    }
+  };
+
+  const handleGenerateArcsForVolume = async (volume: Volume, count: number, reqs: string) => {
+    if (!id) return;
+    setIsVolGenerating(true);
+    setVolGenError(null);
+    try {
+      const arcsInVol = arcs.filter((a) => a.volumeId === volume.id);
+      const existingArcs = arcsInVol.map((a) => `- ${a.title}：${a.summary}`).join('\n');
+      const gen = await generateArcsForVolume({
+        count, volumeName: volume.name, volumeDescription: volume.description,
+        context: buildGenContext(), existingArcs, requirements: reqs,
+        textConfig: textModelConfig, uiLanguage,
+      });
+      if (gen.length === 0) {
+        setVolGenError(tx(uiLanguage, 'AI 未返回有效弧线，请重试或调整要求', 'AI returned no valid arcs — retry or adjust requirements'));
+        return;
+      }
+      let order = arcs.length;
+      for (const g of gen) {
+        addPlotArc(id, {
+          title: g.title,
+          summary: g.summary,
+          order: order++,
+          status: 'upcoming',
+          chapterCount: g.chapter_count,
+          volumeId: volume.id,
+        });
+      }
+      setVolGen(null);
+    } catch (e) {
+      setVolGenError(typeof e === 'string' ? e : tx(uiLanguage, '生成失败', 'Generation failed'));
+    } finally {
+      setIsVolGenerating(false);
+    }
+  };
 
   const handleContinue = async () => {
     if (!id || !hasValidTextConfig || !outline) return;
@@ -462,9 +638,18 @@ export function LongNovelOutlinePage() {
       [],
       { uiLanguage, ladderOnly: true }
     );
-    const existingContext = realmContext
-      ? `${rawExistingContext}\n\n${realmContext}`.trim()
-      : rawExistingContext;
+    // Soft guidance from containers flagged "affects volume / outline generation".
+    const containerGuidance = buildGenerationGuidance(id, 'volume', uiLanguage);
+    // Mirror the Android outline structure: project → 副本(volume) → 剧情弧线(arc).
+    const volumeDirective = tx(
+      uiLanguage,
+      '【结构要求】采用「项目→副本→剧情弧线」结构：在「## 剧情弧线规划」之前，先输出一节「## 副本规划」，列出 3-6 个副本，每个副本用标题 `### 副本N：副本名称`，并写 2-4 句（阶段目标 / 核心矛盾 / 收束）。',
+      '[Structure] Use project → volume(副本) → arc: before "## Plot Arcs", output a "## Volume Plan" section listing 3-6 volumes, each as `### Volume N: Name` with 2-4 sentences (stage goal / core conflict / outcome).'
+    );
+    const existingContext = [rawExistingContext, realmContext, containerGuidance, volumeDirective]
+      .filter((s) => s && s.trim())
+      .join('\n\n')
+      .trim() || undefined;
 
     const unlisten = await listen<string>('long-novel-outline-stream', (event) => {
       if (cancelRef.current) return;
@@ -516,7 +701,33 @@ export function LongNovelOutlinePage() {
       setTimeline(id, parsed.timeline);
       setTimelineLocal(parsed.timeline);
     }
+    // Volumes (副本) parsed from the outline — replace the project's volume set.
+    if (sel.overwriteVolumes && parsed.volumes && parsed.volumes.length > 0) {
+      const newVols: Volume[] = parsed.volumes.map((v, i) => ({
+        id: `vol-${Date.now()}-${i}`,
+        name: v.name,
+        description: v.description,
+        order: i,
+        createdAt: new Date().toISOString(),
+      }));
+      setVolumes(id, newVols);
+    }
+
     if (sel.overwriteArcs && parsed.arcs && parsed.arcs.length > 0) {
+      // Ensure a 副本 exists to hold the freshly generated arcs (keep the first if present).
+      let vols = getVolumes(id);
+      if (vols.length === 0) {
+        const vol: Volume = {
+          id: `vol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: tx(uiLanguage, '副本1', 'Volume 1'),
+          description: '',
+          order: 0,
+          createdAt: new Date().toISOString(),
+        };
+        setVolumes(id, [vol]);
+        vols = [vol];
+      }
+      const targetVolumeId = vols[0].id;
       const newArcs: PlotArc[] = parsed.arcs.map((a, i) => ({
         id: `arc-${Date.now()}-${i}`,
         title: a.title,
@@ -524,6 +735,7 @@ export function LongNovelOutlinePage() {
         order: i + 1,
         status: 'upcoming' as const,
         chapterCount: 0,
+        volumeId: targetVolumeId,
       }));
       setPlotArcs(id, newArcs);
     }
@@ -590,8 +802,23 @@ export function LongNovelOutlinePage() {
     setPlotArcs(id, newSorted.map((a, i) => ({ ...a, order: i + 1 })));
   };
 
+  /** Move an arc to a 1-based position WITHIN its 副本, reusing the volume's existing order slots. */
+  const moveArcToPosition = (arcId: string, position: number) => {
+    if (!id) return;
+    const arc = arcs.find((a) => a.id === arcId);
+    if (!arc) return;
+    const volArcs = [...arcs].filter((a) => a.volumeId === arc.volumeId).sort((a, b) => a.order - b.order);
+    const slots = volArcs.map((a) => a.order);
+    const without = volArcs.filter((a) => a.id !== arcId);
+    const clamped = Math.max(1, Math.min(volArcs.length, Math.floor(position)));
+    without.splice(clamped - 1, 0, arc);
+    without.forEach((a, i) => {
+      if (a.order !== slots[i]) updatePlotArc(id, a.id, { order: slots[i] });
+    });
+  };
+
   return (
-    <div className="w-full max-w-5xl mx-auto space-y-4">
+    <div className="w-full max-w-[1500px] mx-auto space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3">
         <button
@@ -833,21 +1060,121 @@ export function LongNovelOutlinePage() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                {sortedArcs.map((arc, idx) => (
-                  <OutlineArcRow
-                    key={arc.id}
-                    arc={arc}
-                    index={idx}
-                    total={sortedArcs.length}
-                    uiLanguage={uiLanguage}
-                    onEdit={() => setShowArcModal({ mode: 'edit', arc })}
-                    onDelete={() => handleDeleteArc(arc.id)}
-                    onMoveUp={() => handleMoveArc(arc.id, 'up')}
-                    onMoveDown={() => handleMoveArc(arc.id, 'down')}
-                  />
-                ))}
+              {/* Volume toolbar */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                  <Library className="w-3.5 h-3.5 text-purple-500" />
+                  {tx(uiLanguage, '剧情弧线按「副本」组织', 'Arcs are organized into volumes (副本)')}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => { setVolGenError(null); setVolGen({ mode: 'volumes' }); }}
+                    disabled={!hasValidTextConfig}
+                    title={!hasValidTextConfig ? tx(uiLanguage, '请先配置文本模型', 'Configure text model first') : undefined}
+                    className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 text-purple-700 dark:text-purple-300 hover:from-purple-100 hover:to-pink-100 disabled:opacity-40 transition-colors"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {tx(uiLanguage, 'AI 生成副本', 'AI Volumes')}
+                  </button>
+                  <button
+                    onClick={createVolume}
+                    className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors"
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" />
+                    {tx(uiLanguage, '新建副本', 'New Volume')}
+                  </button>
+                </div>
               </div>
+
+              {/* Arcs grouped by volume */}
+              {(() => {
+                const assignedIds = new Set(volumes.map((v) => v.id));
+                const orphanArcs = sortedArcs.filter((a) => !a.volumeId || !assignedIds.has(a.volumeId));
+                const groups: { volume: Volume | null; volArcs: PlotArc[] }[] = volumes.map((v) => ({
+                  volume: v,
+                  volArcs: sortedArcs.filter((a) => a.volumeId === v.id),
+                }));
+                if (orphanArcs.length > 0) groups.push({ volume: null, volArcs: orphanArcs });
+
+                return (
+                  <div className="space-y-4">
+                    {groups.map(({ volume, volArcs }) => (
+                      <div
+                        key={volume?.id ?? '__orphan'}
+                        className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+                      >
+                        <div className="flex items-start gap-2 px-4 py-2.5 bg-purple-50/60 dark:bg-purple-900/10 border-b border-gray-200 dark:border-gray-700">
+                          <Library className="w-4 h-4 text-purple-500 flex-shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <span className="font-medium text-sm text-gray-800 dark:text-gray-200 truncate block">
+                              {volume ? volume.name : tx(uiLanguage, '未分配', 'Unassigned')}
+                            </span>
+                            {volume?.description && (
+                              <span className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 block mt-0.5">
+                                {volume.description}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-xs text-gray-400 flex-shrink-0 mt-0.5">
+                            {tx(uiLanguage, `${volArcs.length} 弧线`, `${volArcs.length} arcs`)}
+                          </span>
+                          {volume && (
+                            <>
+                              <button
+                                onClick={() => { setVolGenError(null); setVolGen({ mode: 'arcs', volume }); }}
+                                disabled={!hasValidTextConfig}
+                                className="flex items-center gap-1 p-1 rounded text-purple-500 hover:text-purple-700 disabled:opacity-40 transition-colors"
+                                title={tx(uiLanguage, 'AI 为本副本生成弧线', 'AI: generate arcs for this volume')}
+                              >
+                                <Sparkles className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setEditingVolume(volume)}
+                                className="p-1 rounded text-gray-400 hover:text-blue-600 transition-colors"
+                                title={tx(uiLanguage, '编辑副本（名称 / 简介）', 'Edit volume (name / description)')}
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              {volumes.length > 1 && (
+                                <button
+                                  onClick={() => deleteVolume(volume.id)}
+                                  className="p-1 rounded text-gray-400 hover:text-red-600 transition-colors"
+                                  title={tx(uiLanguage, '删除副本', 'Delete volume')}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <div className="p-3 space-y-2">
+                          {volArcs.length === 0 ? (
+                            <p className="text-xs text-gray-400 text-center py-2">
+                              {tx(uiLanguage, '该副本暂无弧线', 'No arcs in this volume')}
+                            </p>
+                          ) : (
+                            volArcs.map((arc) => (
+                              <OutlineArcRow
+                                key={arc.id}
+                                arc={arc}
+                                index={sortedArcs.indexOf(arc)}
+                                total={sortedArcs.length}
+                                uiLanguage={uiLanguage}
+                                volumes={volumes}
+                                onChangeVolume={(vId) => moveArcToVolume(arc.id, vId)}
+                                onEdit={() => setShowArcModal({ mode: 'edit', arc })}
+                                onDelete={() => handleDeleteArc(arc.id)}
+                                onMoveUp={() => handleMoveArc(arc.id, 'up')}
+                                onMoveDown={() => handleMoveArc(arc.id, 'down')}
+                              />
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -896,23 +1223,37 @@ export function LongNovelOutlinePage() {
       )}
 
       {/* Arc modal */}
-      {showArcModal && id && (
-        <ArcModal
-          mode={showArcModal.mode}
-          arc={showArcModal.arc}
-          nextOrder={arcs.length + 1}
-          uiLanguage={uiLanguage}
-          onClose={() => setShowArcModal(null)}
-          onSave={(data) => {
-            if (showArcModal.mode === 'create') {
-              addPlotArc(id, data);
-            } else if (showArcModal.arc) {
-              updatePlotArc(id, showArcModal.arc.id, data);
-            }
-            setShowArcModal(null);
-          }}
-        />
-      )}
+      {showArcModal && id && (() => {
+        const editingArc = showArcModal.arc;
+        const volArcs = editingArc ? sortedArcs.filter((a) => a.volumeId === editingArc.volumeId) : [];
+        const arcPosition = editingArc ? volArcs.findIndex((a) => a.id === editingArc.id) + 1 : 0;
+        return (
+          <ArcModal
+            mode={showArcModal.mode}
+            arc={showArcModal.arc}
+            nextOrder={arcs.length + 1}
+            uiLanguage={uiLanguage}
+            volumes={volumes}
+            arcPosition={arcPosition}
+            arcPositionMax={volArcs.length}
+            onClose={() => setShowArcModal(null)}
+            onSave={(data, position) => {
+              if (showArcModal.mode === 'create') {
+                // New arc lands in the chosen volume, or the first volume (created if none yet).
+                let volumeId = data.volumeId;
+                if (!volumeId) {
+                  volumeId = volumes[0]?.id ?? createVolume();
+                }
+                addPlotArc(id, { ...data, volumeId });
+              } else if (showArcModal.arc) {
+                updatePlotArc(id, showArcModal.arc.id, data);
+                if (position && position !== arcPosition) moveArcToPosition(showArcModal.arc.id, position);
+              }
+              setShowArcModal(null);
+            }}
+          />
+        );
+      })()}
 
       {/* Save dialog */}
       {showSaveDialog && (
@@ -927,18 +1268,115 @@ export function LongNovelOutlinePage() {
           onClose={() => setShowSaveDialog(false)}
         />
       )}
+
+      {/* 副本 / 弧线 AI generation modal */}
+      {volGen && (
+        <VolumeGenModal
+          mode={volGen.mode}
+          volumeName={volGen.mode === 'arcs' ? volGen.volume.name : undefined}
+          uiLanguage={uiLanguage}
+          loading={isVolGenerating}
+          error={volGenError}
+          onClose={() => { if (!isVolGenerating) { setVolGen(null); setVolGenError(null); } }}
+          onConfirm={(count, reqs) => {
+            if (volGen.mode === 'volumes') handleGenerateVolumes(count, reqs);
+            else handleGenerateArcsForVolume(volGen.volume, count, reqs);
+          }}
+        />
+      )}
+
+      {editingVolume && (
+        <VolumeEditModal
+          initialName={editingVolume.name}
+          initialDescription={editingVolume.description}
+          uiLanguage={uiLanguage}
+          onClose={() => setEditingVolume(null)}
+          onSave={(name, description) => { saveVolumeEdit(editingVolume.id, name, description); setEditingVolume(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── 副本 / 弧线 AI generation modal ────────────────────────────
+function VolumeGenModal({
+  mode, volumeName, uiLanguage, loading, error, onClose, onConfirm,
+}: {
+  mode: 'volumes' | 'arcs';
+  volumeName?: string;
+  uiLanguage: 'zh' | 'en';
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: (count: number, requirements: string) => void;
+}) {
+  const [count, setCount] = useState(mode === 'volumes' ? '3' : '4');
+  const [reqs, setReqs] = useState('');
+  const title = mode === 'volumes'
+    ? tx(uiLanguage, 'AI 生成副本', 'AI Generate Volumes')
+    : tx(uiLanguage, `AI 为「${volumeName}」生成弧线`, `AI Generate Arcs for "${volumeName}"`);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}>
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+          <Sparkles className="w-5 h-5 text-purple-500" />
+          {title}
+        </h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {mode === 'volumes' ? tx(uiLanguage, '生成数量', 'Count') : tx(uiLanguage, '生成弧线数量', 'Arc count')}
+            </label>
+            <input
+              type="number" min={1} max={12} value={count}
+              onChange={(e) => setCount(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {tx(uiLanguage, '额外要求（可选）', 'Requirements (optional)')}
+            </label>
+            <textarea
+              value={reqs}
+              onChange={(e) => setReqs(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 h-24 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+              placeholder={mode === 'volumes'
+                ? tx(uiLanguage, '例如：第一个副本写新手村，最后一个副本走向终局…', 'e.g. first volume is the origin, last drives to the finale…')
+                : tx(uiLanguage, '例如：本副本要有一个反派转折…', 'e.g. include a villain twist in this volume…')}
+            />
+          </div>
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </div>
+        <div className="flex gap-3 mt-6">
+          <Button variant="outline" onClick={onClose} disabled={loading} className="flex-1">
+            {tx(uiLanguage, '取消', 'Cancel')}
+          </Button>
+          <Button
+            onClick={() => onConfirm(Math.max(1, Math.min(12, parseInt(count, 10) || 3)), reqs.trim())}
+            loading={loading}
+            className="flex-1 bg-purple-600 hover:bg-purple-700"
+          >
+            <Sparkles className="w-4 h-4 mr-1.5" />
+            {tx(uiLanguage, '生成', 'Generate')}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ── Outline Arc Row ────────────────────────────────────────────
 function OutlineArcRow({
-  arc, index, total, uiLanguage, onEdit, onDelete, onMoveUp, onMoveDown,
+  arc, index, total, uiLanguage, volumes, onChangeVolume, onEdit, onDelete, onMoveUp, onMoveDown,
 }: {
   arc: PlotArc;
   index: number;
   total: number;
   uiLanguage: 'zh' | 'en';
+  volumes: Volume[];
+  onChangeVolume: (volumeId: string) => void;
   onEdit: () => void;
   onDelete: () => void;
   onMoveUp: () => void;
@@ -1003,9 +1441,28 @@ function OutlineArcRow({
         </div>
         {expanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
       </div>
-      {expanded && arc.summary && (
-        <div className="px-4 pb-4 pt-0 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-          <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed pt-3">{arc.summary}</p>
+      {expanded && (
+        <div className="px-4 pb-4 pt-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 space-y-3">
+          {arc.summary && (
+            <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{arc.summary}</p>
+          )}
+          {volumes.length > 0 && (
+            <div className="flex items-center gap-2">
+              <Library className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+              <label className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
+                {tx(uiLanguage, '所属副本', 'Volume')}
+              </label>
+              <select
+                value={arc.volumeId ?? ''}
+                onChange={(e) => onChangeVolume(e.target.value)}
+                className="text-xs px-2 py-1 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+                {volumes.map((v) => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1022,18 +1479,23 @@ const ARC_STATUS_LABEL: Record<PlotArc['status'], { zh: string; en: string }> = 
 };
 
 function ArcModal({
-  mode, arc, nextOrder, uiLanguage, onClose, onSave,
+  mode, arc, nextOrder, uiLanguage, volumes, arcPosition, arcPositionMax, onClose, onSave,
 }: {
   mode: 'create' | 'edit';
   arc?: PlotArc;
   nextOrder: number;
   uiLanguage: 'zh' | 'en';
+  volumes: Volume[];
+  arcPosition?: number;
+  arcPositionMax?: number;
   onClose: () => void;
-  onSave: (data: Omit<PlotArc, 'id'>) => void;
+  onSave: (data: Omit<PlotArc, 'id'>, position?: number) => void;
 }) {
   const [title, setTitle] = useState(arc?.title ?? '');
   const [summary, setSummary] = useState(arc?.summary ?? '');
   const [status, setStatus] = useState<PlotArc['status']>(arc?.status ?? 'upcoming');
+  const [volumeId, setVolumeId] = useState<string>(arc?.volumeId ?? volumes[0]?.id ?? '');
+  const [position, setPosition] = useState(String(arcPosition ?? 1));
 
   return (
     <div
@@ -1084,6 +1546,38 @@ function ArcModal({
               ))}
             </select>
           </div>
+          {volumes.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {tx(uiLanguage, '所属副本', 'Volume')}
+              </label>
+              <select
+                value={volumeId}
+                onChange={(e) => setVolumeId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                {volumes.map((v) => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {mode === 'edit' && (arcPositionMax ?? 0) > 1 && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {tx(uiLanguage, `在副本内的顺序（1 - ${arcPositionMax}）`, `Position in volume (1 - ${arcPositionMax})`)}
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={arcPositionMax}
+                value={position}
+                onChange={(e) => setPosition(e.target.value)}
+                className="w-24 px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+              <p className="text-xs text-gray-400 mt-1">{tx(uiLanguage, '保存时移动到该序号。', 'Moved to this position on save.')}</p>
+            </div>
+          )}
         </div>
         <div className="flex gap-3 mt-6">
           <Button variant="outline" onClick={onClose} className="flex-1">
@@ -1099,7 +1593,8 @@ function ArcModal({
                 status,
                 chaptersUntilEnd: arc?.chaptersUntilEnd,
                 chapterCount: arc?.chapterCount ?? 0,
-              });
+                volumeId: volumeId || arc?.volumeId,
+              }, mode === 'edit' ? parseInt(position, 10) || undefined : undefined);
             }}
             className="flex-1 bg-purple-600 hover:bg-purple-700"
             disabled={!title.trim()}

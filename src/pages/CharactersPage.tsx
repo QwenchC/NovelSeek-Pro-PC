@@ -5,6 +5,7 @@ import { useAppStore, Character } from '@store/index';
 import { aiApi, projectApi } from '@services/api';
 import type { Project } from '@typings/index';
 import { Button } from '@components/Button';
+import { uiAlert } from '@components/uiDialog';
 import { ArrowLeft, Plus, Edit, Trash2, User, Save, Star, Sparkles, AlertCircle, Check } from 'lucide-react';
 import { confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
@@ -36,6 +37,10 @@ const sanitizeCharacterName = (line: string): string =>
 
 const isInvalidCharacterName = (name: string): boolean =>
   /^(主要角色|main characters?)$/i.test(name.trim());
+
+/** Portrait may be a full data URL or raw base64 (legacy / Android import). Never double-prefix. */
+const portraitSrc = (b64?: string | null): string =>
+  !b64 ? '' : /^(data:|https?:|blob:)/.test(b64) ? b64 : `data:image/png;base64,${b64}`;
 
 const normalizeCharacter = (raw: Partial<Character>, index = 0): Character => ({
   id: raw.id || `char-${Date.now()}-${index}`,
@@ -108,7 +113,7 @@ const normalizeValidCharacters = (input: Character[]): Character[] =>
 
 export function CharactersPage() {
   const { id: projectId } = useParams<{ id: string }>();
-  const smartBack = useSmartBack(projectId ? `/project/${projectId}` : '/');
+  const smartBack = useSmartBack(projectId ? `/project/${projectId}` : '/short-novels');
   const {
     uiLanguage,
     currentProject,
@@ -120,6 +125,9 @@ export function CharactersPage() {
     imageEngine,
     comfyUIUrl,
   } = useAppStore();
+
+  // In-app, centered notice dialog (replaces browser-native alert popups).
+  const notify = (message: string) => { void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message }); };
 
   const [characters, setCharacters] = useState<Character[]>([]);
   const [loading, setLoading] = useState(true);
@@ -427,10 +435,10 @@ export function CharactersPage() {
     try {
       await syncCharactersToOutline(characters);
       setHasChanges(false);
-      alert(tx(uiLanguage, '角色信息已保存！', 'Character info saved!'));
+      notify(tx(uiLanguage, '角色信息已保存！', 'Character info saved!'));
     } catch (error) {
       console.error('Failed to save characters:', error);
-      alert(typeof error === 'string' ? error : tx(uiLanguage, '保存失败', 'Save failed'));
+      notify(typeof error === 'string' ? error : tx(uiLanguage, '保存失败', 'Save failed'));
     }
   };
 
@@ -586,7 +594,7 @@ export function CharactersPage() {
       setAppearanceTargetId(null);
 
       if (portraitWarning) {
-        alert(
+        notify(
           tx(
             uiLanguage,
             `人物形象已同步到大纲。${portraitWarning}`,
@@ -755,7 +763,7 @@ export function CharactersPage() {
                   <div className="w-full aspect-[5/7] overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900/40">
                     {char.portraitBase64 ? (
                       <img
-                        src={char.portraitBase64}
+                        src={portraitSrc(char.portraitBase64)}
                         alt={`${char.name} ${tx(uiLanguage, '形象', 'Portrait')}`}
                         className="w-full h-full object-cover"
                       />

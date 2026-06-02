@@ -216,6 +216,26 @@ impl GenerationService {
         Ok(content)
     }
 
+    /// Generic single-shot chat completion (system + user). Used by features ported back from the
+    /// Android app: container/growth per-chapter AI updates and novel-chat answering.
+    pub async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
+        let client = self.deepseek.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("DeepSeek not configured"))?;
+
+        let params = GenerationParams {
+            temperature: Some(self.effective_temperature(0.7)),
+            max_tokens: Some(4000),
+            system_prompt: if system_prompt.trim().is_empty() {
+                None
+            } else {
+                Some(system_prompt.to_string())
+            },
+        };
+
+        let (content, _) = client.generate_text(user_prompt, Some(params)).await?;
+        Ok(content)
+    }
+
     pub async fn generate_tweet(&self, chapter_content: &str) -> Result<String> {
         let client = self.deepseek.as_ref()
             .ok_or_else(|| anyhow::anyhow!("DeepSeek not configured"))?;

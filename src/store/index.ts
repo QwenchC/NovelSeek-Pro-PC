@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import type {
   Chapter,
   EmbeddingConfig,
@@ -14,6 +14,108 @@ import type {
 
 export type { ProjectFolder };
 
+// ── Persistence storage ────────────────────────────────────────
+// localStorage's ~5MB quota can't hold image-heavy state (character portraits, chapter promo
+// images) — importing a full Android backup overflows it. Persist to IndexedDB instead (large
+// quota), migrating any existing localStorage value on first read.
+const IDB_NAME = 'novelseek-store';
+const IDB_STORE = 'kv';
+let idbPromise: Promise<IDBDatabase> | null = null;
+
+function getIdb(): Promise<IDBDatabase> {
+  if (!idbPromise) {
+    idbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return idbPromise;
+}
+
+function idbGet(key: string): Promise<string | null> {
+  return getIdb().then(
+    (db) =>
+      new Promise<string | null>((resolve, reject) => {
+        const r = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+        r.onsuccess = () => resolve((r.result as string | undefined) ?? null);
+        r.onerror = () => reject(r.error);
+      })
+  );
+}
+
+function idbSet(key: string, value: string): Promise<void> {
+  return getIdb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      })
+  );
+}
+
+function idbDel(key: string): Promise<void> {
+  return getIdb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      })
+  );
+}
+
+const idbStorage: StateStorage = {
+  getItem: async (name) => {
+    try {
+      const v = await idbGet(name);
+      if (v != null) return v;
+    } catch (e) {
+      console.warn('[store] IndexedDB get failed:', e);
+    }
+    // One-time migration: read the legacy localStorage value if IndexedDB is empty.
+    try {
+      return localStorage.getItem(name);
+    } catch {
+      return null;
+    }
+  },
+  setItem: async (name, value) => {
+    try {
+      await idbSet(name, value);
+      // Free the old localStorage copy (and its quota) once data lives in IndexedDB.
+      try {
+        localStorage.removeItem(name);
+      } catch {
+        /* ignore */
+      }
+    } catch (e) {
+      console.warn('[store] IndexedDB set failed, falling back to localStorage:', e);
+      try {
+        localStorage.setItem(name, value);
+      } catch (e2) {
+        console.error('[store] persist failed (quota?):', e2);
+      }
+    }
+  },
+  removeItem: async (name) => {
+    try {
+      await idbDel(name);
+    } catch {
+      /* ignore */
+    }
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
 export interface Character {
   id: string;
   name: string;
@@ -26,6 +128,9 @@ export interface Character {
   portraitBase64?: string;
   portraitPrompt?: string;
   isProtagonist: boolean;
+  // Cultivation realm tracking (mirrors Android `Character.currentRealmId/currentSubRealmId`).
+  currentRealmId?: string;
+  currentSubRealmId?: string;
 }
 
 export interface ChapterPromo {
@@ -47,6 +152,82 @@ export interface PlotArc {
   chapterCount: number;
   miniOutline?: string;
   builtChapterIds?: string[];
+  // The 副本 (Volume) this arc belongs to. Null = legacy/un-assigned; migrated into "副本1"
+  // by ensureVolumes(). Mirrors Android `PlotArc.volumeId`.
+  volumeId?: string;
+}
+
+// ── 副本 (Volume) — long-novel container for plot arcs ─────────
+// Mirrors Android `Volume` (Domain.kt). Volumes are an ordered grouping of PlotArcs; arcs
+// reference their volume via PlotArc.volumeId. Stored in `volumesByProject`.
+export interface Volume {
+  id: string;
+  name: string;
+  description: string;
+  order: number;
+  createdAt: string;
+}
+
+// ── 成长路线 (Character Growth) ────────────────────────────────
+// One entry in a character's growth route — a per-chapter knowledge base of how the character
+// develops. The latest entries are injected into new-chapter generation as soft guidance.
+// Stored in `characterGrowthByProject[projectId][characterId]`. Mirrors Android `CharacterGrowthEntry`.
+export interface CharacterGrowthEntry {
+  id: string;
+  value: string;
+  chapterId?: string;
+  chapterOrder?: number;
+  chapterTitle?: string;
+  createdAt: string;
+  manual: boolean;
+}
+
+// ── 容器 (Container) — flexible, optionally AI-evolved knowledge store per project ──
+// Mirrors Android `Container`/`ContainerEntry`/`ContainerStore` (Container.kt). A container is
+// partitioned into BLOCKS by its type:
+//   - by_character: one block per character (blockKey = characterId)
+//   - by_chapter:   one block per chapter   (blockKey = chapterId)
+//   - single:       one block               (blockKey = "main")
+// Blocks are derived live from current characters/chapters; each block holds a CHAIN of entries
+// (oldest → newest). Stored in `containersByProject[projectId]`.
+export type ContainerType = 'by_character' | 'by_chapter' | 'single';
+export const CONTAINER_SINGLE_BLOCK_KEY = 'main';
+
+export interface Container {
+  id: string;
+  name: string;
+  type: ContainerType;
+  autoUpdatePerChapter: boolean;
+  affectsGeneration: boolean;
+  affectsVolumeGeneration: boolean;
+  affectsArcGeneration: boolean;
+  createdAt: string;
+}
+
+export interface ContainerEntry {
+  id: string;
+  value: string;
+  sourceChapterId?: string;
+  sourceChapterOrder?: number;
+  sourceChapterTitle?: string;
+  createdAt: string;
+  manual: boolean;
+}
+
+export interface ContainerStore {
+  containers: Container[];
+  // containerId -> (blockKey -> chain of entries, oldest first)
+  entries: Record<string, Record<string, ContainerEntry[]>>;
+}
+
+// ── 问小说 (Novel Chat) ────────────────────────────────────────
+// One turn in the per-project "ask the novel" Q&A agent. Mirrors Android `NovelChatMessage`.
+// Stored in `novelChatsByProject[projectId]`; exported/imported under the backup key `novelChats`.
+export interface NovelChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
 }
 
 export interface CharacterRelationship {
@@ -108,6 +289,8 @@ function normalizeCharacterRecord(character: Partial<Character>, index = 0): Cha
     portraitBase64: character.portraitBase64 || undefined,
     portraitPrompt: character.portraitPrompt || undefined,
     isProtagonist: Boolean(character.isProtagonist),
+    currentRealmId: character.currentRealmId || undefined,
+    currentSubRealmId: character.currentSubRealmId || undefined,
   };
 }
 
@@ -311,6 +494,28 @@ function pickActiveProfile(
   );
 }
 
+// ── Agent 多会话 (ported from Android agent/data/model/Agent.kt) ──────────────
+// One step in the agent's top-to-bottom execution chain; persisted so a session survives restarts.
+export type AgentStepRole = 'user' | 'thought' | 'tool' | 'result' | 'final' | 'error' | 'ask' | 'image';
+export interface AgentStep {
+  id: string;
+  role: AgentStepRole;
+  content: string;
+  tool?: string;
+  image?: string; // base64 data URL for role === 'image'
+}
+/** One agent conversation. `lockedProjectId` is the focused project; `autoApprove` pre-authorizes
+ *  sensitive steps for this session. */
+export interface AgentSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  steps: AgentStep[];
+  lockedProjectId: string | null;
+  autoApprove: boolean;
+}
+export interface AgentSessionMeta { id: string; title: string; createdAt: string }
+
 interface AppState {
   projects: Project[];
   currentProject: Project | null;
@@ -416,6 +621,55 @@ interface AppState {
   /** Remove all realm events tied to a deleted chapter. Idempotent. */
   cleanupRealmEventsForChapter: (projectId: string, chapterId: string) => void;
 
+  // ── 副本 (Volumes) ────────────────────────────────────────────
+  volumesByProject: Record<string, Volume[]>;
+  setVolumes: (projectId: string, volumes: Volume[]) => void;
+  getVolumes: (projectId: string) => Volume[];
+  /** Wrap orphan/legacy arcs into a single "副本1". Idempotent — safe on every project open. */
+  ensureVolumes: (projectId: string) => void;
+
+  // ── 容器 (Containers) ─────────────────────────────────────────
+  containersByProject: Record<string, ContainerStore>;
+  getContainerStore: (projectId: string) => ContainerStore;
+  getContainers: (projectId: string) => Container[];
+  createContainer: (projectId: string, container: Container) => void;
+  updateContainerMeta: (
+    projectId: string,
+    containerId: string,
+    patch: Pick<
+      Container,
+      'name' | 'autoUpdatePerChapter' | 'affectsGeneration' | 'affectsVolumeGeneration' | 'affectsArcGeneration'
+    >
+  ) => void;
+  deleteContainer: (projectId: string, containerId: string) => void;
+  getContainerEntries: (projectId: string, containerId: string, blockKey: string) => ContainerEntry[];
+  appendContainerEntry: (
+    projectId: string,
+    containerId: string,
+    blockKey: string,
+    entry: ContainerEntry
+  ) => void;
+  /** Overwrite the value of the newest entry in a block (user manually editing the latest value). */
+  replaceLatestContainerEntry: (
+    projectId: string,
+    containerId: string,
+    blockKey: string,
+    value: string
+  ) => void;
+
+  // ── 成长路线 (Character Growth) ───────────────────────────────
+  characterGrowthByProject: Record<string, Record<string, CharacterGrowthEntry[]>>;
+  getCharacterGrowth: (projectId: string, characterId: string) => CharacterGrowthEntry[];
+  setCharacterGrowth: (projectId: string, characterId: string, entries: CharacterGrowthEntry[]) => void;
+  appendCharacterGrowth: (projectId: string, characterId: string, entry: CharacterGrowthEntry) => void;
+
+  // ── 问小说 (Novel Chat) ───────────────────────────────────────
+  novelChatsByProject: Record<string, NovelChatMessage[]>;
+  getNovelChat: (projectId: string) => NovelChatMessage[];
+  setNovelChat: (projectId: string, messages: NovelChatMessage[]) => void;
+  appendNovelChat: (projectId: string, message: NovelChatMessage) => void;
+  clearNovelChat: (projectId: string) => void;
+
   // Local knowledge base (RAG)
   knowledgeBaseEnabled: boolean;
   embeddingConfig: EmbeddingConfig;
@@ -428,6 +682,37 @@ interface AppState {
   entitiesEnabled: boolean;
   setSummariesEnabled: (enabled: boolean) => void;
   setEntitiesEnabled: (enabled: boolean) => void;
+
+  // ── Agent 多会话 (multi-session) ──────────────────────────────
+  agentSessions: Record<string, AgentSession>;
+  agentSessionOrder: string[];        // session ids, newest-first
+  agentCurrentSessionId: string | null;
+  getAgentSessionMetas: () => AgentSessionMeta[];
+  getAgentSession: (id: string) => AgentSession | undefined;
+  /** Ensure at least one session exists and return the current id (creating one if needed). */
+  ensureAgentSession: () => string;
+  newAgentSession: () => string;      // create + make current, returns new id
+  switchAgentSession: (id: string) => void;
+  deleteAgentSession: (id: string) => void;
+  renameAgentSession: (id: string, title: string) => void;
+  /** Upsert a session's full content (steps/focus/autoApprove/title) and mark it current. */
+  saveAgentSession: (session: AgentSession) => void;
+  /** Append one step to a session's chain (used by the background runner). */
+  appendAgentStep: (sessionId: string, step: AgentStep) => void;
+  /** Patch a session's fields (focus / autoApprove / steps). */
+  patchAgentSession: (sessionId: string, patch: Partial<AgentSession>) => void;
+
+  // ── Agent run-time (NOT persisted — resets to idle on reload) ──
+  agentStatus: 'idle' | 'running' | 'awaiting_user' | 'awaiting_confirm';
+  agentRunSessionId: string | null;     // which session the background run belongs to
+  agentPendingConfirm: { tool: string; args: Record<string, any> } | null;
+  setAgentStatus: (status: 'idle' | 'running' | 'awaiting_user' | 'awaiting_confirm') => void;
+  setAgentRunSessionId: (id: string | null) => void;
+  setAgentPendingConfirm: (p: { tool: string; args: Record<string, any> } | null) => void;
+  /** Bumped whenever chapters are mutated outside an open page (e.g. the background agent), so pages
+   *  showing a chapter list can re-fetch live. Not persisted. */
+  chaptersVersion: number;
+  bumpChaptersVersion: () => void;
 }
 
 const initialProfiles = cloneBuiltinProfiles();
@@ -834,6 +1119,192 @@ export const useAppStore = create<AppState>()(
           };
         }),
 
+      // ── 副本 (Volumes) ──────────────────────────────────────────
+      volumesByProject: {},
+      setVolumes: (projectId, volumes) =>
+        set((state) => ({
+          volumesByProject: {
+            ...state.volumesByProject,
+            [projectId]: [...volumes].sort((a, b) => a.order - b.order),
+          },
+        })),
+      getVolumes: (projectId) => {
+        const list = get().volumesByProject[projectId] || [];
+        return [...list].sort((a, b) => a.order - b.order);
+      },
+      ensureVolumes: (projectId) => {
+        const state = get();
+        const arcs = state.plotArcsByProject[projectId] || [];
+        const vols = state.getVolumes(projectId);
+        if (vols.length > 0) {
+          const ids = new Set(vols.map((v) => v.id));
+          const firstId = vols[0].id; // already sorted by order
+          if (arcs.some((a) => !a.volumeId || !ids.has(a.volumeId))) {
+            state.setPlotArcs(
+              projectId,
+              arcs.map((a) =>
+                !a.volumeId || !ids.has(a.volumeId) ? { ...a, volumeId: firstId } : a
+              )
+            );
+          }
+          return;
+        }
+        if (arcs.length === 0) return; // no volumes & no arcs: created on demand
+        const name = state.uiLanguage === 'en' ? 'Volume 1' : '副本1';
+        const vol: Volume = {
+          id: `vol-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name,
+          description: '',
+          order: 0,
+          createdAt: new Date().toISOString(),
+        };
+        state.setVolumes(projectId, [vol]);
+        state.setPlotArcs(
+          projectId,
+          arcs.map((a) => ({ ...a, volumeId: vol.id }))
+        );
+      },
+
+      // ── 容器 (Containers) ───────────────────────────────────────
+      containersByProject: {},
+      getContainerStore: (projectId) =>
+        get().containersByProject[projectId] || { containers: [], entries: {} },
+      getContainers: (projectId) => get().getContainerStore(projectId).containers,
+      createContainer: (projectId, container) =>
+        set((state) => {
+          const store = state.containersByProject[projectId] || { containers: [], entries: {} };
+          return {
+            containersByProject: {
+              ...state.containersByProject,
+              [projectId]: { ...store, containers: [...store.containers, container] },
+            },
+          };
+        }),
+      updateContainerMeta: (projectId, containerId, patch) =>
+        set((state) => {
+          const store = state.containersByProject[projectId];
+          if (!store) return state;
+          return {
+            containersByProject: {
+              ...state.containersByProject,
+              [projectId]: {
+                ...store,
+                containers: store.containers.map((c) =>
+                  c.id === containerId ? { ...c, ...patch } : c
+                ),
+              },
+            },
+          };
+        }),
+      deleteContainer: (projectId, containerId) =>
+        set((state) => {
+          const store = state.containersByProject[projectId];
+          if (!store) return state;
+          const nextEntries = { ...store.entries };
+          delete nextEntries[containerId];
+          return {
+            containersByProject: {
+              ...state.containersByProject,
+              [projectId]: {
+                containers: store.containers.filter((c) => c.id !== containerId),
+                entries: nextEntries,
+              },
+            },
+          };
+        }),
+      getContainerEntries: (projectId, containerId, blockKey) =>
+        get().getContainerStore(projectId).entries[containerId]?.[blockKey] || [],
+      appendContainerEntry: (projectId, containerId, blockKey, entry) =>
+        set((state) => {
+          const store = state.containersByProject[projectId] || { containers: [], entries: {} };
+          const byContainer = { ...(store.entries[containerId] || {}) };
+          byContainer[blockKey] = [...(byContainer[blockKey] || []), entry];
+          return {
+            containersByProject: {
+              ...state.containersByProject,
+              [projectId]: {
+                ...store,
+                entries: { ...store.entries, [containerId]: byContainer },
+              },
+            },
+          };
+        }),
+      replaceLatestContainerEntry: (projectId, containerId, blockKey, value) =>
+        set((state) => {
+          const store = state.containersByProject[projectId];
+          if (!store) return state;
+          const byContainer = store.entries[containerId];
+          const chain = byContainer?.[blockKey];
+          if (!chain || chain.length === 0) return state;
+          const nextChain = [...chain];
+          nextChain[nextChain.length - 1] = {
+            ...nextChain[nextChain.length - 1],
+            value,
+            manual: true,
+          };
+          return {
+            containersByProject: {
+              ...state.containersByProject,
+              [projectId]: {
+                ...store,
+                entries: {
+                  ...store.entries,
+                  [containerId]: { ...byContainer, [blockKey]: nextChain },
+                },
+              },
+            },
+          };
+        }),
+
+      // ── 成长路线 (Character Growth) ─────────────────────────────
+      characterGrowthByProject: {},
+      getCharacterGrowth: (projectId, characterId) =>
+        get().characterGrowthByProject[projectId]?.[characterId] || [],
+      setCharacterGrowth: (projectId, characterId, entries) =>
+        set((state) => ({
+          characterGrowthByProject: {
+            ...state.characterGrowthByProject,
+            [projectId]: {
+              ...(state.characterGrowthByProject[projectId] || {}),
+              [characterId]: entries,
+            },
+          },
+        })),
+      appendCharacterGrowth: (projectId, characterId, entry) =>
+        set((state) => {
+          const inner = state.characterGrowthByProject[projectId] || {};
+          return {
+            characterGrowthByProject: {
+              ...state.characterGrowthByProject,
+              [projectId]: {
+                ...inner,
+                [characterId]: [...(inner[characterId] || []), entry],
+              },
+            },
+          };
+        }),
+
+      // ── 问小说 (Novel Chat) ─────────────────────────────────────
+      novelChatsByProject: {},
+      getNovelChat: (projectId) => get().novelChatsByProject[projectId] || [],
+      setNovelChat: (projectId, messages) =>
+        set((state) => ({
+          novelChatsByProject: { ...state.novelChatsByProject, [projectId]: messages },
+        })),
+      appendNovelChat: (projectId, message) =>
+        set((state) => ({
+          novelChatsByProject: {
+            ...state.novelChatsByProject,
+            [projectId]: [...(state.novelChatsByProject[projectId] || []), message],
+          },
+        })),
+      clearNovelChat: (projectId) =>
+        set((state) => {
+          const next = { ...state.novelChatsByProject };
+          delete next[projectId];
+          return { novelChatsByProject: next };
+        }),
+
       // ── Knowledge base ────────────────────────────────────────
       knowledgeBaseEnabled: false,
       embeddingConfig: { ...DEFAULT_EMBEDDING_CONFIG },
@@ -863,10 +1334,93 @@ export const useAppStore = create<AppState>()(
       entitiesEnabled: false,
       setSummariesEnabled: (enabled) => set({ summariesEnabled: enabled }),
       setEntitiesEnabled: (enabled) => set({ entitiesEnabled: enabled }),
+
+      // ── Agent 多会话 (multi-session) ────────────────────────────
+      agentSessions: {},
+      agentSessionOrder: [],
+      agentCurrentSessionId: null,
+      getAgentSessionMetas: () =>
+        get().agentSessionOrder
+          .map((id) => get().agentSessions[id])
+          .filter((s): s is AgentSession => !!s)
+          .map((s) => ({ id: s.id, title: s.title, createdAt: s.createdAt })),
+      getAgentSession: (id) => get().agentSessions[id],
+      ensureAgentSession: () => {
+        const st = get();
+        const cur = st.agentCurrentSessionId;
+        if (cur && st.agentSessions[cur]) return cur;
+        const firstId = st.agentSessionOrder.find((id) => st.agentSessions[id]);
+        if (firstId) { set({ agentCurrentSessionId: firstId }); return firstId; }
+        return get().newAgentSession();
+      },
+      newAgentSession: () => {
+        const id = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        set((state) => {
+          const title = `会话 ${state.agentSessionOrder.length + 1}`;
+          const session: AgentSession = { id, title, createdAt: new Date().toISOString(), steps: [], lockedProjectId: null, autoApprove: false };
+          return {
+            agentSessions: { ...state.agentSessions, [id]: session },
+            agentSessionOrder: [id, ...state.agentSessionOrder],
+            agentCurrentSessionId: id,
+          };
+        });
+        return id;
+      },
+      switchAgentSession: (id) => {
+        if (get().agentSessions[id]) set({ agentCurrentSessionId: id });
+      },
+      deleteAgentSession: (id) =>
+        set((state) => {
+          const sessions = { ...state.agentSessions };
+          delete sessions[id];
+          const order = state.agentSessionOrder.filter((x) => x !== id);
+          const current = state.agentCurrentSessionId === id ? (order[0] ?? null) : state.agentCurrentSessionId;
+          return { agentSessions: sessions, agentSessionOrder: order, agentCurrentSessionId: current };
+        }),
+      renameAgentSession: (id, title) =>
+        set((state) => {
+          const s = state.agentSessions[id];
+          if (!s) return {} as Partial<AppState>;
+          return { agentSessions: { ...state.agentSessions, [id]: { ...s, title } } };
+        }),
+      saveAgentSession: (session) =>
+        set((state) => {
+          const order = state.agentSessionOrder.includes(session.id)
+            ? state.agentSessionOrder
+            : [session.id, ...state.agentSessionOrder];
+          return {
+            agentSessions: { ...state.agentSessions, [session.id]: session },
+            agentSessionOrder: order,
+            agentCurrentSessionId: session.id,
+          };
+        }),
+      appendAgentStep: (sessionId, step) =>
+        set((state) => {
+          const sess = state.agentSessions[sessionId];
+          if (!sess) return {} as Partial<AppState>;
+          return { agentSessions: { ...state.agentSessions, [sessionId]: { ...sess, steps: [...sess.steps, step] } } };
+        }),
+      patchAgentSession: (sessionId, patch) =>
+        set((state) => {
+          const sess = state.agentSessions[sessionId];
+          if (!sess) return {} as Partial<AppState>;
+          return { agentSessions: { ...state.agentSessions, [sessionId]: { ...sess, ...patch } } };
+        }),
+
+      // ── Agent run-time (not persisted) ──
+      agentStatus: 'idle',
+      agentRunSessionId: null,
+      agentPendingConfirm: null,
+      setAgentStatus: (agentStatus) => set({ agentStatus }),
+      setAgentRunSessionId: (agentRunSessionId) => set({ agentRunSessionId }),
+      setAgentPendingConfirm: (agentPendingConfirm) => set({ agentPendingConfirm }),
+      chaptersVersion: 0,
+      bumpChaptersVersion: () => set((state) => ({ chaptersVersion: state.chaptersVersion + 1 })),
     }),
     {
       name: 'novelseek-storage',
-      version: 10,
+      storage: createJSONStorage(() => idbStorage),
+      version: 12,
       partialize: (state) => ({
         textModelConfig: state.textModelConfig,
         textModelProfiles: state.textModelProfiles,
@@ -888,10 +1442,17 @@ export const useAppStore = create<AppState>()(
         characterEventsByProject: state.characterEventsByProject,
         cultivationRealmsByProject: state.cultivationRealmsByProject,
         characterRealmEventsByProject: state.characterRealmEventsByProject,
+        volumesByProject: state.volumesByProject,
+        containersByProject: state.containersByProject,
+        characterGrowthByProject: state.characterGrowthByProject,
+        novelChatsByProject: state.novelChatsByProject,
         knowledgeBaseEnabled: state.knowledgeBaseEnabled,
         embeddingConfig: state.embeddingConfig,
         summariesEnabled: state.summariesEnabled,
         entitiesEnabled: state.entitiesEnabled,
+        agentSessions: state.agentSessions,
+        agentSessionOrder: state.agentSessionOrder,
+        agentCurrentSessionId: state.agentCurrentSessionId,
       }),
       migrate: (persistedState: any, version) => {
         if (!persistedState || typeof persistedState !== 'object') {
@@ -1029,6 +1590,21 @@ export const useAppStore = create<AppState>()(
           if (!persistedState.characterRealmEventsByProject) {
             persistedState.characterRealmEventsByProject = {};
           }
+        }
+
+        if (version < 11) {
+          // New mechanisms ported back from the Android app (NovelSeek-Ultra).
+          if (!persistedState.volumesByProject) persistedState.volumesByProject = {};
+          if (!persistedState.containersByProject) persistedState.containersByProject = {};
+          if (!persistedState.characterGrowthByProject) persistedState.characterGrowthByProject = {};
+          if (!persistedState.novelChatsByProject) persistedState.novelChatsByProject = {};
+        }
+
+        if (version < 12) {
+          // Agent multi-session persistence.
+          if (!persistedState.agentSessions || typeof persistedState.agentSessions !== 'object') persistedState.agentSessions = {};
+          if (!Array.isArray(persistedState.agentSessionOrder)) persistedState.agentSessionOrder = [];
+          if (typeof persistedState.agentCurrentSessionId !== 'string') persistedState.agentCurrentSessionId = null;
         }
 
         return persistedState;

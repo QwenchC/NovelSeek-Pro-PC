@@ -25,6 +25,7 @@ impl ChapterService {
             status: "draft".to_string(),
             created_at: now.clone(),
             updated_at: now,
+            arc_id: None,
         };
 
         sqlx::query(
@@ -74,6 +75,71 @@ impl ChapterService {
         .await?;
 
         Ok(chapter)
+    }
+
+    /// All chapters across every project, ordered for stable export.
+    pub async fn get_all(pool: &SqlitePool) -> Result<Vec<Chapter>> {
+        let chapters = sqlx::query_as::<_, Chapter>(
+            "SELECT * FROM chapters ORDER BY project_id, order_index ASC"
+        )
+        .fetch_all(pool)
+        .await?;
+
+        Ok(chapters)
+    }
+
+    /// Upsert a whole chapter (metadata + text bodies + illustrations + arc_id) from a backup.
+    /// Incoming wins on conflict (mirrors Android `importBackup` merge semantics). Does NOT
+    /// recompute project word counts — callers recompute once per project after a bulk import.
+    pub async fn upsert(pool: &SqlitePool, input: crate::models::ImportChapter) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let created_at = input.created_at.unwrap_or_else(|| now.clone());
+        let updated_at = input.updated_at.unwrap_or_else(|| now.clone());
+        let status = input.status.unwrap_or_else(|| "draft".to_string());
+
+        sqlx::query(
+            r#"
+            INSERT INTO chapters
+                (id, project_id, title, order_index, outline_goal, conflict, twist, cliffhanger,
+                 draft_text, final_text, illustrations, word_count, status, created_at, updated_at, arc_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                project_id = excluded.project_id,
+                title = excluded.title,
+                order_index = excluded.order_index,
+                outline_goal = excluded.outline_goal,
+                conflict = excluded.conflict,
+                twist = excluded.twist,
+                cliffhanger = excluded.cliffhanger,
+                draft_text = excluded.draft_text,
+                final_text = excluded.final_text,
+                illustrations = excluded.illustrations,
+                word_count = excluded.word_count,
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                arc_id = excluded.arc_id
+            "#
+        )
+        .bind(&input.id)
+        .bind(&input.project_id)
+        .bind(&input.title)
+        .bind(input.order_index)
+        .bind(&input.outline_goal)
+        .bind(&input.conflict)
+        .bind(&input.twist)
+        .bind(&input.cliffhanger)
+        .bind(&input.draft_text)
+        .bind(&input.final_text)
+        .bind(&input.illustrations)
+        .bind(input.word_count)
+        .bind(&status)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .bind(&input.arc_id)
+        .execute(pool)
+        .await?;
+
+        Ok(())
     }
 
     pub async fn update_text(
@@ -158,6 +224,7 @@ impl ChapterService {
                 conflict = COALESCE(?, conflict),
                 twist = COALESCE(?, twist),
                 cliffhanger = COALESCE(?, cliffhanger),
+                arc_id = COALESCE(?, arc_id),
                 updated_at = ?
             WHERE id = ?
             "#
@@ -168,6 +235,7 @@ impl ChapterService {
         .bind(input.conflict)
         .bind(input.twist)
         .bind(input.cliffhanger)
+        .bind(input.arc_id)
         .bind(&now)
         .bind(id)
         .execute(pool)

@@ -1,7 +1,33 @@
 use tauri::State;
 use sqlx::SqlitePool;
+use serde::Serialize;
 use crate::models::{Chapter, CreateChapterInput, UpdateChapterMetaInput};
 use crate::services::ChapterService;
+
+#[derive(Serialize)]
+pub struct ChapterCount {
+    pub project_id: String,
+    pub count: i64,
+}
+
+/// Lightweight per-project chapter counts (one grouped query, no row bodies).
+/// Used by the project list cards to show 章节数 without fetching full chapters.
+#[tauri::command]
+pub async fn get_chapter_counts(
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<ChapterCount>, String> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT project_id, COUNT(*) FROM chapters GROUP BY project_id",
+    )
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(project_id, count)| ChapterCount { project_id, count })
+        .collect())
+}
 
 #[tauri::command]
 pub async fn create_chapter(

@@ -1,5 +1,8 @@
 pub mod project;
 pub mod chapter;
+pub mod content;
+pub mod snapshot;
+pub mod tts;
 pub mod ai;
 pub mod stream;
 pub mod system;

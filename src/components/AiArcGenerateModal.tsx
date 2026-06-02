@@ -5,6 +5,7 @@ import { Button } from '@components/Button';
 import { Sparkles, X, ChevronLeft } from 'lucide-react';
 import { tx } from '@utils/i18n';
 import { buildRealmSystemContext } from '@utils/cultivation';
+import { buildGenerationGuidance } from '@utils/containerAi';
 import type { Chapter, PlotArcResult } from '@typings/index';
 
 interface AiArcGenerateModalProps {
@@ -107,6 +108,12 @@ export function AiArcGenerateModal({
     setError(null);
     setResult(null);
 
+    // Fold in soft guidance from containers flagged "affects arc generation".
+    const containerGuidance = buildGenerationGuidance(projectId, 'arc', uiLanguage);
+    const combinedRealmContext = containerGuidance
+      ? `${realmContext}\n\n${containerGuidance}`.trim()
+      : realmContext;
+
     try {
       const res = await aiApi.generatePlotArc({
         user_idea: userIdea.trim(),
@@ -114,7 +121,7 @@ export function AiArcGenerateModal({
         book_description: projectDescription || '',
         book_outline: getLongNovelOutline(projectId) || '',
         existing_arcs_summary: arcsContextSummary,
-        realm_system_context: realmContext,
+        realm_system_context: combinedRealmContext,
         characters_summary: charactersSummary,
         target_chapter_count: n,
         output_language: uiLanguage,

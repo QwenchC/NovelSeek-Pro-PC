@@ -1,10 +1,10 @@
-# NovelSeek Pro PC
+# NovelSeek Ultra PC
 
 [![Built with Pollinations](https://img.shields.io/badge/Built%20with-Pollinations-8a2be2?style=for-the-badge&logo=data:image/svg+xml,%3Csvg%20xmlns%3D%22http://www.w3.org/2000/svg%22%20viewBox%3D%220%200%20124%20124%22%3E%3Ccircle%20cx%3D%2262%22%20cy%3D%2262%22%20r%3D%2262%22%20fill%3D%22%23ffffff%22/%3E%3C/svg%3E&logoColor=white&labelColor=6a0dad)](https://pollinations.ai)
 
 [中文文档](README.md)
 
-NovelSeek Pro PC is a desktop tool for long-form novel creation, covering the full workflow from outline planning and chapter generation to illustration/cover generation and ebook export.  
+NovelSeek Ultra PC is a desktop tool for long-form novel creation, covering the full workflow from outline planning and chapter generation to illustration/cover generation and ebook export.  
 Built with `Tauri + React + TypeScript + Rust + SQLite`, it runs fully local with on-device data persistence.
 
 ## Pollinations Attribution
@@ -106,7 +106,7 @@ Configure in the app `Settings` page:
 ## Project Structure
 
 ```text
-NovelSeek-Pro-PC/
+NovelSeek-Ultra-PC/
 ├─ src/
 │  ├─ components/      # Shared UI components
 │  ├─ pages/           # Pages: home/project/outline/editor/export/settings

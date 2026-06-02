@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi } from '@services/api';
 import { Button } from '@components/Button';
+import { uiAlert } from '@components/uiDialog';
 import { Plus, BookOpen, Calendar, TrendingUp, Trash2, ScrollText } from 'lucide-react';
 import { formatDate, formatWordCount, calculateProgress, confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
@@ -72,7 +73,7 @@ export function HomePage() {
       loadProjects();
     } catch (error) {
       console.error('Failed to delete project:', error);
-      alert(tx(uiLanguage, '删除项目失败', 'Failed to delete project'));
+      void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message: tx(uiLanguage, '删除项目失败', 'Failed to delete project') });
     }
   };
 
@@ -327,7 +328,7 @@ function CreateProjectModal({ onClose, onSuccess }: CreateProjectModalProps) {
       onSuccess(novelType, project.id);
     } catch (error) {
       console.error('Failed to create project:', error);
-      alert(tx(uiLanguage, '创建项目失败', 'Failed to create project'));
+      void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message: tx(uiLanguage, '创建项目失败', 'Failed to create project') });
     } finally {
       setLoading(false);
     }

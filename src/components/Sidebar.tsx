@@ -9,6 +9,7 @@ import { tx } from '@utils/i18n';
 import {
   ScrollText,
   BookOpen,
+  Bot,
   Settings,
   PanelLeftClose,
   X,
@@ -224,6 +225,7 @@ export function Sidebar() {
     deleteFolder,
     moveProjectToFolder,
     novelTypeByProject,
+    agentRunSessionId,
   } = useAppStore();
 
   const [loadingProjects, setLoadingProjects] = useState(false);
@@ -246,8 +248,9 @@ export function Sidebar() {
   } | null>(null);
 
   const navItems = [
-    { path: '/', label: tx(uiLanguage, '短篇小说', 'Short Stories'), icon: ScrollText },
+    { path: '/short-novels', label: tx(uiLanguage, '短篇小说', 'Short Stories'), icon: ScrollText },
     { path: '/long-novels', label: tx(uiLanguage, '长篇小说', 'Long Novels'), icon: BookOpen },
+    { path: '/agent', label: tx(uiLanguage, '智能体', 'Agent'), icon: Bot },
   ];
 
   useEffect(() => {
@@ -375,7 +378,7 @@ export function Sidebar() {
           <div className="flex items-center space-x-2 min-w-0">
             <BookOpen className="w-6 h-6 text-primary-600 flex-shrink-0" />
             <h1 className="text-lg md:text-xl font-bold text-gray-900 dark:text-white truncate">
-              NovelSeek Pro
+              NovelSeek Ultra
             </h1>
           </div>
           <button
@@ -419,6 +422,9 @@ export function Sidebar() {
                   >
                     <Icon className="w-5 h-5" />
                     <span>{item.label}</span>
+                    {item.path === '/agent' && agentRunSessionId && (
+                      <span className="ml-auto w-2 h-2 rounded-full bg-purple-500 animate-pulse" title={tx(uiLanguage, '智能体运行中', 'Agent running')} />
+                    )}
                   </Link>
                 );
               })}
@@ -442,7 +448,7 @@ export function Sidebar() {
                   <FolderPlus className="w-4 h-4" />
                 </button>
                 <Link
-                  to="/"
+                  to="/short-novels"
                   onClick={handleNavClick}
                   className="text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 ml-1"
                 >

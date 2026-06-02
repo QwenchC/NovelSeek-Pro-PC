@@ -54,7 +54,7 @@ function stripMarkdown(text: string): string {
 export function EditorPage() {
   const { projectId, chapterId } = useParams();
   const navigate = useNavigate();
-  const smartBack = useSmartBack(projectId ? `/project/${projectId}` : '/');
+  const smartBack = useSmartBack(projectId ? `/project/${projectId}` : '/short-novels');
   const [searchParams] = useSearchParams();
   const {
     textModelConfig,

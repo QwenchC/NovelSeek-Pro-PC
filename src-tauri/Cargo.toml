@@ -1,7 +1,7 @@
 [package]
-name = "novelseek-pro-pc"
-version = "1.2.1"
-description = "Professional Novel Generation & Publishing Tool"
+name = "novelseek-ultra-pc"
+version = "2.0.0"
+description = "NovelSeek Ultra — AI long-form novel writing studio (PC / Tauri)"
 authors = ["NovelSeek Team"]
 license = ""
 repository = ""
@@ -32,6 +32,9 @@ lazy_static = "1.4"
 futures-util = "0.3"
 regex = "1.10"
 base64 = "0.21"
+# Edge "Read Aloud" TTS over WebSocket (mirrors the Android EdgeTtsService mechanism).
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+sha2 = "0.10"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
