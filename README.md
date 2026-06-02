@@ -8,7 +8,7 @@
 
 **NovelSeek Ultra PC** 是一款面向**长篇小说**创作的桌面工具，把「项目 → 副本 → 剧情弧线 → 章节」的结构化创作流程、本地知识库（RAG）、自演化容器知识库、修炼境界体系、可后台运行的写作智能体（Agent）整合到一个离线应用里。基于 `Tauri + React + TypeScript + Rust + SQLite`，数据本地持久化；其备份格式与手机端 **NovelSeek-Ultra** 完全互通，可无损互导。
 
-> 📸 **主界面预览**（截图见文末「截图清单」）
+> 📸 **主界面预览**
 >
 > ![主界面预览](docs/screenshots/hero.png)
 
@@ -91,8 +91,6 @@ npm run tauri:build
 ---
 
 ## 操作手册
-
-> 下面每一步都预留了截图位置（`docs/screenshots/*.png`）。把对应截图放进该目录、文件名对上即可自动显示。文末有完整的[截图清单](#截图清单需要你手动补充)。
 
 ### 1. 配置 AI 模型（设置页）
 
@@ -235,9 +233,9 @@ NovelSeek-Ultra-PC/
 
 ## Pollinations Attribution
 
-- 官方网站：<https://pollinations.ai>
+- 官方网站：<https://enter.pollinations.ai/>
 
-[![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://pollinations.ai)
+[![pollinations.ai Logo Text White](docs/assets/pollinations-logo-text-on-dark.svg)](https://enter.pollinations.ai/)
 
 ---
 
