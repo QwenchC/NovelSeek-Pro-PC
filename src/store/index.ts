@@ -585,6 +585,18 @@ interface AppState {
   deleteFolder: (folderId: string) => void;
   moveProjectToFolder: (projectId: string, folderId: string | null) => void;
 
+  // Open project tabs (browser-like multi-open) shown in the Topbar. Ordered list of project IDs.
+  openProjectTabs: string[];
+  // Per-tab last-visited full route (so a tab reopens on the exact sub-page — e.g. the chapter editor —
+  // not just the project landing page). projectId → pathname.
+  tabPathByProject: Record<string, string>;
+  openProjectTab: (projectId: string) => void;   // add to the end if not already open (no-op otherwise)
+  setProjectTabPath: (projectId: string, path: string) => void; // remember the tab's current route
+  closeProjectTab: (projectId: string) => void;   // remove from the tab strip
+  closeOtherProjectTabs: (keepId: string) => void; // keep only keepId
+  closeAllProjectTabs: () => void;                 // clear the strip
+  reorderProjectTabs: (orderedIds: string[]) => void;
+
   // Long novel state
   novelTypeByProject: Record<string, NovelType>;
   setNovelType: (projectId: string, type: NovelType) => void;
@@ -982,6 +994,39 @@ export const useAppStore = create<AppState>()(
             return { ...f, projectIds: [...f.projectIds, projectId] };
           }),
         })),
+
+      openProjectTabs: [],
+      tabPathByProject: {},
+      openProjectTab: (projectId) =>
+        set((state) =>
+          state.openProjectTabs.includes(projectId)
+            ? state
+            : { openProjectTabs: [...state.openProjectTabs, projectId] }
+        ),
+      setProjectTabPath: (projectId, path) =>
+        set((state) =>
+          state.tabPathByProject[projectId] === path
+            ? state
+            : { tabPathByProject: { ...state.tabPathByProject, [projectId]: path } }
+        ),
+      closeProjectTab: (projectId) =>
+        set((state) => {
+          const rest = { ...state.tabPathByProject };
+          delete rest[projectId];
+          return {
+            openProjectTabs: state.openProjectTabs.filter((pid) => pid !== projectId),
+            tabPathByProject: rest,
+          };
+        }),
+      closeOtherProjectTabs: (keepId) =>
+        set((state) => ({
+          openProjectTabs: state.openProjectTabs.filter((pid) => pid === keepId),
+          tabPathByProject: state.tabPathByProject[keepId]
+            ? { [keepId]: state.tabPathByProject[keepId] }
+            : {},
+        })),
+      closeAllProjectTabs: () => set({ openProjectTabs: [], tabPathByProject: {} }),
+      reorderProjectTabs: (orderedIds) => set({ openProjectTabs: orderedIds }),
 
       // ── Long novel implementations ──────────────────────────
       novelTypeByProject: {},
@@ -1443,6 +1488,8 @@ export const useAppStore = create<AppState>()(
         theme: state.theme,
         uiLanguage: state.uiLanguage,
         folders: state.folders,
+        openProjectTabs: state.openProjectTabs,
+        tabPathByProject: state.tabPathByProject,
         novelTypeByProject: state.novelTypeByProject,
         plotArcsByProject: state.plotArcsByProject,
         longNovelOutlineByProject: state.longNovelOutlineByProject,

@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi, knowledgeApi } from '@services/api';
@@ -11,6 +11,10 @@ import type { Chapter, Project } from '@typings/index';
 import { alertDialog, confirmDialog } from '@utils/index';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
+import {
+  getCachedProject, setCachedProject, getCachedChapters, setCachedChapters,
+  chaptersSignature, projectSignature,
+} from '@utils/projectPageCache';
 
 interface CoverImageItem {
   id: string;
@@ -113,8 +117,19 @@ export function ProjectPage() {
     height: 1920,
   });
 
+  // Seed the store from cache BEFORE paint so switching to an already-open tab doesn't flash the
+  // previously-viewed project (this Route reuses the same instance across :id changes).
+  useLayoutEffect(() => {
+    if (!id) return;
+    const cachedProject = getCachedProject(id);
+    const cachedChapters = getCachedChapters(id);
+    if (cachedProject) setCurrentProject(cachedProject);
+    if (cachedChapters) setChapters(cachedChapters);
+  }, [id]);
+
   useEffect(() => {
     if (id) {
+      // Stale-while-revalidate: cached data already painted (above); refresh from disk in background.
       loadProject(id);
       loadChapters(id);
       // 重新计算并更新项目字数
@@ -163,7 +178,11 @@ export function ProjectPage() {
       await invoke('recalculate_project_word_count', { projectId });
       // 重新加载项目以获取更新后的字数
       const project = await projectApi.getById(projectId);
-      setCurrentProject(project);
+      if (project) {
+        const changed = projectSignature(project) !== projectSignature(getCachedProject(projectId));
+        setCachedProject(projectId, project);
+        if (changed) setCurrentProject(project);
+      }
     } catch (error) {
       console.error('Failed to recalculate word count:', error);
     }
@@ -172,7 +191,13 @@ export function ProjectPage() {
   const loadProject = async (projectId: string) => {
     try {
       const project = await projectApi.getById(projectId);
-      setCurrentProject(project);
+      if (project) {
+        const changed = projectSignature(project) !== projectSignature(getCachedProject(projectId));
+        setCachedProject(projectId, project);
+        if (changed) setCurrentProject(project);
+      } else {
+        setCurrentProject(project);
+      }
     } catch (error) {
       console.error('Failed to load project:', error);
     }
@@ -189,6 +214,7 @@ export function ProjectPage() {
         }
         await chapterApi.updateMeta(prologue.id, { order_index: 0 });
         const refreshed = await chapterApi.getByProject(projectId);
+        setCachedChapters(projectId, refreshed);
         setChapters(refreshed);
         return;
       }
@@ -199,11 +225,14 @@ export function ProjectPage() {
             await chapterApi.updateMeta(chapter.id, { order_index: chapter.order_index - (minOrder - 1) });
           }
           const refreshed = await chapterApi.getByProject(projectId);
+          setCachedChapters(projectId, refreshed);
           setChapters(refreshed);
           return;
         }
       }
-      setChapters(data);
+      const changed = chaptersSignature(data) !== chaptersSignature(getCachedChapters(projectId));
+      setCachedChapters(projectId, data);
+      if (changed) setChapters(data);
     } catch (error) {
       console.error('Failed to load chapters:', error);
     }

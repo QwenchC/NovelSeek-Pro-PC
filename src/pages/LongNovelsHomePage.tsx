@@ -6,12 +6,13 @@ import { Button } from '@components/Button';
 import { uiAlert } from '@components/uiDialog';
 import { Plus, BookOpen, Calendar, TrendingUp, Trash2, Layers } from 'lucide-react';
 import { formatDate, formatWordCount, calculateProgress, confirmDialog } from '@utils/index';
+import { clearProjectPageCache } from '@utils/projectPageCache';
 import { tx } from '@utils/i18n';
 import type { Project } from '@typings/index';
 
 export function LongNovelsHomePage() {
   const navigate = useNavigate();
-  const { projects, setProjects, uiLanguage, novelTypeByProject, setNovelType, plotArcsByProject, volumesByProject } =
+  const { projects, setProjects, uiLanguage, novelTypeByProject, setNovelType, plotArcsByProject, volumesByProject, closeProjectTab } =
     useAppStore();
   // Render instantly if zustand has cached projects from a previous mount in this session.
   const [loading, setLoading] = useState(projects.length === 0);
@@ -69,6 +70,8 @@ export function LongNovelsHomePage() {
     if (!confirmed) return;
     try {
       await projectApi.delete(projectId);
+      closeProjectTab(projectId);      // drop its Topbar tab
+      clearProjectPageCache(projectId); // and its stale landing-page cache
       loadProjects();
     } catch {
       void uiAlert({ title: tx(uiLanguage, '提示', 'Notice'), message: tx(uiLanguage, '删除项目失败', 'Failed to delete project') });

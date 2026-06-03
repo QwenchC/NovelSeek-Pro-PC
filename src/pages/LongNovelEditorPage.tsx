@@ -13,6 +13,9 @@ import { chapterStructureLabel, stripChapterHeading } from '@utils/index';
 import { useSmartBack } from '@utils/useSmartBack';
 import { buildRealmSystemContext, buildVolumeRealmConstraint } from '@utils/cultivation';
 import { buildGenerationGuidance, runChapterAutoUpdates } from '@utils/containerAi';
+import {
+  getEditorDraft, setEditorDraftContent, setEditorDraftScroll,
+} from '@utils/editorDraftCache';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -418,17 +421,38 @@ export function LongNovelEditorPage() {
         const found = sorted.find((c) => c.id === chapterId);
         if (found) {
           setChapter(found);
-          setContent(found.final_text || found.draft_text || '');
+          // Restore unsaved in-progress text from a previous tab visit; otherwise load from disk
+          // (so a chapter with no local edits still picks up background/agent changes).
+          const draft = getEditorDraft(chapterId);
+          if (draft?.dirty) {
+            setContent(draft.content);
+            setIsSaved(false);
+          } else {
+            setContent(found.final_text || found.draft_text || '');
+            setIsSaved(true);
+          }
           setIllustrations(parseIllustrations(found.illustrations));
           const savedPromo = getPromo(chapterId);
           setPromoResult(savedPromo || null);
           setIsPromoExpanded(false);
           setSelectedParagraphs(new Set());
           setActiveIllustrationId(null);
+          // Restore the editor scroll position once the textarea has rendered the content.
+          const top = draft?.scrollTop ?? 0;
+          requestAnimationFrame(() => { if (textareaRef.current) textareaRef.current.scrollTop = top; });
         }
       }
     });
   }, [id, chapterId]);
+
+  // Mirror the editor's text + unsaved flag into the per-chapter draft cache, so switching to another
+  // tab and back restores exactly what was on screen. Captures every source that sets `content`
+  // (typing, AI streaming, polish, generation), since it keys off the `content`/`isSaved` state.
+  useEffect(() => {
+    const cid = chapter?.id;
+    if (!cid) return;
+    setEditorDraftContent(cid, content, !isSaved);
+  }, [content, isSaved, chapter?.id]);
 
   // Live-refresh the chapter LIST when chapters change elsewhere (e.g. the background agent creates
   // or generates chapters). Only touches the list — never the open chapter's editing state.
@@ -453,15 +477,23 @@ export function LongNovelEditorPage() {
     }
     navigate(`/long-novel/${id}/editor/${ch.id}`, { replace: true });
     setChapter(ch);
-    setContent(ch.final_text || ch.draft_text || '');
+    const draft = getEditorDraft(ch.id);
+    if (draft?.dirty) {
+      setContent(draft.content);
+      setIsSaved(false);
+    } else {
+      setContent(ch.final_text || ch.draft_text || '');
+      setIsSaved(true);
+    }
     setIllustrations(parseIllustrations(ch.illustrations));
     const savedPromo = getPromo(ch.id);
     setPromoResult(savedPromo || null);
     setIsPromoExpanded(false);
     setSelectedParagraphs(new Set());
     setActiveIllustrationId(null);
-    setIsSaved(true);
     setError(null);
+    const top = draft?.scrollTop ?? 0;
+    requestAnimationFrame(() => { if (textareaRef.current) textareaRef.current.scrollTop = top; });
   };
 
   const renameChapterInList = async (ch: Chapter) => {
@@ -1554,7 +1586,10 @@ export function LongNovelEditorPage() {
                 onMouseUp={updateRevisionSelection}
                 onKeyUp={updateRevisionSelection}
                 onSelect={updateRevisionSelection}
-                onScroll={() => { if (revisionSelection) updateRevisionSelection(); }}
+                onScroll={(e) => {
+                  if (revisionSelection) updateRevisionSelection();
+                  if (chapter?.id) setEditorDraftScroll(chapter.id, (e.target as HTMLTextAreaElement).scrollTop);
+                }}
                 onBlur={() => { setRevisionSelection(null); setRevisionButtonPos(null); }}
                 className="w-full h-full px-6 py-5 text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-900 resize-none focus:outline-none text-base leading-relaxed font-serif"
                 placeholder={tx(

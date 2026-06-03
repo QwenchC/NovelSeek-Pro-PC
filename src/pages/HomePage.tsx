@@ -6,12 +6,13 @@ import { Button } from '@components/Button';
 import { uiAlert } from '@components/uiDialog';
 import { Plus, BookOpen, Calendar, TrendingUp, Trash2, ScrollText } from 'lucide-react';
 import { formatDate, formatWordCount, calculateProgress, confirmDialog } from '@utils/index';
+import { clearProjectPageCache } from '@utils/projectPageCache';
 import { tx } from '@utils/i18n';
 import type { Project } from '@typings/index';
 
 export function HomePage() {
   const navigate = useNavigate();
-  const { projects, setProjects, uiLanguage, novelTypeByProject } = useAppStore();
+  const { projects, setProjects, uiLanguage, novelTypeByProject, closeProjectTab } = useAppStore();
   // Render instantly if zustand has cached projects from a previous mount in this session.
   // Only show the "Loading..." splash on a truly cold start.
   const [loading, setLoading] = useState(projects.length === 0);
@@ -70,6 +71,8 @@ export function HomePage() {
 
     try {
       await projectApi.delete(projectId);
+      closeProjectTab(projectId);      // drop its Topbar tab
+      clearProjectPageCache(projectId); // and its stale landing-page cache
       loadProjects();
     } catch (error) {
       console.error('Failed to delete project:', error);

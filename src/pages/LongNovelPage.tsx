@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@store/index';
 import { projectApi, chapterApi, knowledgeApi } from '@services/api';
@@ -15,10 +15,16 @@ import {
   Trash2, Play, Sunset,
   PenLine, ScrollText, Image, FileDown, ChevronLeft, ChevronRight, Sparkles,
   Boxes, MessageCircleQuestion, History, Headphones, ArrowUpDown, GripVertical,
+  Megaphone, Loader2, X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/tauri';
-import { formatDate, formatWordCount, confirmDialog, chapterStructureLabel } from '@utils/index';
+import { formatDate, formatWordCount, confirmDialog, alertDialog, chapterStructureLabel } from '@utils/index';
 import { tx } from '@utils/i18n';
+import {
+  getCachedProject, setCachedProject, getCachedChapters, setCachedChapters,
+  hasProjectPageCache, chaptersSignature, projectSignature,
+} from '@utils/projectPageCache';
+import { clearEditorDraft } from '@utils/editorDraftCache';
 import type { Chapter } from '@typings/index';
 
 interface CoverImageItem {
@@ -63,6 +69,7 @@ export function LongNovelPage() {
     chapters, setChapters,
     getPlotArcs, getVolumes, ensureVolumes, getCharacters,
     cleanupRealmEventsForChapter,
+    getPromo, setPromo,
     textModelConfig, pollinationsKey, imageEngine, comfyUIUrl,
   } = useAppStore();
 
@@ -71,7 +78,9 @@ export function LongNovelPage() {
     textModelConfig.apiUrl.trim().length > 0 &&
     textModelConfig.model.trim().length > 0;
 
-  const [loading, setLoading] = useState(true);
+  // Only show the blocking spinner on the FIRST visit to a project. On revisits (tab switch) we
+  // already have cached data, so render it immediately and refresh in the background — no reload flash.
+  const [loading, setLoading] = useState(() => !(id && hasProjectPageCache(id)));
 
   // Cover modal state
   const [showCoverModal, setShowCoverModal] = useState(false);
@@ -91,6 +100,10 @@ export function LongNovelPage() {
   const [reorderMode, setReorderMode] = useState(false);
   const [orderIds, setOrderIds] = useState<string[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  // Batch chapter-promo (推文) generation progress.
+  const [batchPromo, setBatchPromo] = useState<{ done: number; total: number; current: string } | null>(null);
+  const batchPromoCancelRef = useRef(false);
   const orderIdsRef = useRef<string[]>([]);
   const draggingIdRef = useRef<string | null>(null);
   const longPressTimer = useRef<number | null>(null);
@@ -101,15 +114,45 @@ export function LongNovelPage() {
   const activeArc = arcs.find((a) => a.status === 'active' || a.status === 'ending');
   const volumes = id ? getVolumes(id) : [];
 
+  // Seed the store from cache BEFORE paint (useLayoutEffect) so switching to an already-open tab never
+  // flashes the previously-viewed project — React Router reuses this instance across :id changes.
+  useLayoutEffect(() => {
+    if (!id) return;
+    const cachedProject = getCachedProject(id);
+    const cachedChapters = getCachedChapters(id);
+    if (cachedProject) setCurrentProject(cachedProject);
+    if (cachedChapters) setChapters(cachedChapters);
+    setLoading(!hasProjectPageCache(id));
+  }, [id]);
+
   useEffect(() => {
     if (!id) return;
+    // Stale-while-revalidate: cached data already painted (above); now refresh from disk in background.
+    // Only push to the store when the fetched data actually differs, so an unchanged tab switch costs
+    // ZERO extra re-renders (the seed above already rendered it).
     Promise.all([
-      projectApi.getById(id).then(setCurrentProject),
-      chapterApi.getByProject(id).then(setChapters),
+      projectApi.getById(id).then((p) => {
+        if (!p) return;
+        const changed = projectSignature(p) !== projectSignature(getCachedProject(id));
+        setCachedProject(id, p);
+        if (changed) setCurrentProject(p);
+      }),
+      chapterApi.getByProject(id).then((c) => {
+        const changed = chaptersSignature(c) !== chaptersSignature(getCachedChapters(id));
+        setCachedChapters(id, c);
+        if (changed) setChapters(c);
+      }),
     ]).finally(() => setLoading(false));
     // Wrap legacy/imported arcs into a 副本 so the project→volume→arc→chapter structure is coherent.
     ensureVolumes(id);
   }, [id]);
+
+  // Set chapters in the store AND keep the per-project cache in sync, so a later tab switch back
+  // here shows the up-to-date list immediately (used after local mutations: delete / rename / reorder).
+  const cacheAndSetChapters = (next: Chapter[]) => {
+    if (id) setCachedChapters(id, next);
+    setChapters(next);
+  };
 
   // Load cover images when modal opens
   useEffect(() => {
@@ -238,8 +281,81 @@ export function LongNovelPage() {
       .catch((e) => console.warn('[KB] handleChapterDeletion failed:', e));
     // Drop any cultivation realm events tied to this chapter (frontend-only state).
     cleanupRealmEventsForChapter(id, chapterId);
+    clearEditorDraft(chapterId); // forget any cached editor draft for the deleted chapter
     const updated = await chapterApi.getByProject(id);
-    setChapters(updated);
+    cacheAndSetChapters(updated);
+  };
+
+  // Batch-generate chapter promos (推文) for every chapter that HAS body text but NO promo yet.
+  // Skips chapters that already have a promo and those too short to summarise. Same per-chapter flow
+  // as the editor: generate_chapter_promo → generate_promo_image → setPromo.
+  const MIN_PROMO_CHARS = 100;
+  const handleBatchGeneratePromos = async () => {
+    if (!id || batchPromo) return;
+    if (!hasValidTextConfig) {
+      await alertDialog(tx(uiLanguage, '请先在「设置」中配置可用的文本模型。', 'Configure a text model in Settings first.'));
+      return;
+    }
+    const ordered = [...chapters].sort((a, b) => a.order_index - b.order_index);
+    const withBody = ordered.filter((c) => (c.final_text || c.draft_text || '').trim().length >= MIN_PROMO_CHARS);
+    const alreadyHasPromo = withBody.filter((c) => !!getPromo(c.id)).length;
+    const eligible = withBody.filter((c) => !getPromo(c.id));
+
+    if (eligible.length === 0) {
+      await alertDialog(tx(
+        uiLanguage,
+        `没有需要生成推文的章节。\n（已写正文且尚无推文的章节为 0；其中 ${alreadyHasPromo} 章已有推文会被跳过）`,
+        `No chapters need a promo.\n(0 written chapters without one; ${alreadyHasPromo} already have a promo and are skipped.)`
+      ));
+      return;
+    }
+
+    const ok = await confirmDialog(
+      tx(uiLanguage,
+        `将为 ${eligible.length} 个已写正文的章节生成推文，跳过 ${alreadyHasPromo} 个已有推文的章节。是否继续？`,
+        `Generate promos for ${eligible.length} written chapter(s), skipping ${alreadyHasPromo} that already have one. Continue?`),
+      tx(uiLanguage, '批量生成章节推文', 'Batch generate chapter promos')
+    );
+    if (!ok) return;
+
+    batchPromoCancelRef.current = false;
+    let success = 0;
+    let fail = 0;
+    for (let i = 0; i < eligible.length; i++) {
+      if (batchPromoCancelRef.current) break;
+      const ch = eligible[i];
+      setBatchPromo({ done: i, total: eligible.length, current: ch.title });
+      try {
+        const body = (ch.final_text || ch.draft_text || '').trim();
+        const promoData = await invoke<{ image_prompt: string; summary: string }>('generate_chapter_promo', {
+          chapterTitle: ch.title || tx(uiLanguage, '未命名章节', 'Untitled chapter'),
+          chapterContent: body,
+          style: null,
+          outputLanguage: 'zh',
+          textConfig: textModelConfig,
+        });
+        const imageBase64 = await invoke<string>('generate_promo_image', {
+          prompt: promoData.image_prompt,
+          width: 1200,
+          height: 400,
+          pollinationsKey: pollinationsKey || null,
+          engine: imageEngine,
+          comfyuiUrl: comfyUIUrl || null,
+        });
+        setPromo(ch.id, { imagePrompt: promoData.image_prompt, summary: promoData.summary, imageBase64 });
+        success++;
+      } catch (e) {
+        console.warn('[batch promo] failed for chapter', ch.id, e);
+        fail++;
+      }
+    }
+    const cancelled = batchPromoCancelRef.current;
+    setBatchPromo(null);
+    await alertDialog(tx(
+      uiLanguage,
+      `推文批量生成完成：成功 ${success} 个${fail ? `，失败 ${fail} 个` : ''}${cancelled ? '（已取消剩余）' : ''}。`,
+      `Done: ${success} succeeded${fail ? `, ${fail} failed` : ''}${cancelled ? ' (cancelled remaining)' : ''}.`
+    ));
   };
 
   const handleRenameChapter = async (ch: Chapter) => {
@@ -251,7 +367,7 @@ export function LongNovelPage() {
     });
     if (!title?.trim()) return;
     await chapterApi.updateMeta(ch.id, { title: title.trim() });
-    setChapters(await chapterApi.getByProject(id));
+    cacheAndSetChapters(await chapterApi.getByProject(id));
   };
 
   const sortedArcs = [...arcs].sort((a, b) => a.order - b.order);
@@ -314,11 +430,11 @@ export function LongNovelPage() {
       const u = updates.find((x) => x.cid === c.id);
       return u ? { ...c, order_index: u.order } : c;
     });
-    setChapters(next);
+    cacheAndSetChapters(next);
     try {
       for (const u of updates) await chapterApi.updateMeta(u.cid, { order_index: u.order });
     } catch {
-      chapterApi.getByProject(id).then(setChapters);
+      chapterApi.getByProject(id).then(cacheAndSetChapters);
     }
   };
 
@@ -433,6 +549,7 @@ export function LongNovelPage() {
             {tx(uiLanguage, '角色', 'Characters')}
           </Button>
           <MoreMenu label={tx(uiLanguage, '更多', 'More')}>
+            <MoreMenuItem icon={<Megaphone className="w-4 h-4 text-pink-500" />} label={tx(uiLanguage, '批量生成推文', 'Batch Promos')} onClick={handleBatchGeneratePromos} />
             <MoreMenuItem icon={<Sparkles className="w-4 h-4 text-amber-500" />} label={tx(uiLanguage, '境界系统', 'Realms')} onClick={() => setShowCultivationModal(true)} />
             <MoreMenuItem icon={<Boxes className="w-4 h-4 text-purple-500" />} label={tx(uiLanguage, '容器', 'Containers')} onClick={() => navigate(`/long-novel/${id}/containers`)} />
             <MoreMenuItem icon={<MessageCircleQuestion className="w-4 h-4 text-blue-500" />} label={tx(uiLanguage, '问小说', 'Ask Novel')} onClick={() => navigate(`/long-novel/${id}/qa`)} />
@@ -660,6 +777,33 @@ export function LongNovelPage() {
               <Button variant="outline" onClick={() => setShowCoverModal(false)} className="flex-1">{tx(uiLanguage, '关闭', 'Close')}</Button>
               <Button onClick={handleGenerateCover} loading={coverGenerating} className="flex-1">{tx(uiLanguage, '生成封面', 'Generate Cover')}</Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch promo generation progress (bottom-right toast) */}
+      {batchPromo && (
+        <div className="fixed bottom-4 right-4 z-50 w-72 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-100">
+              <Loader2 className="w-4 h-4 animate-spin text-pink-500" />
+              {tx(uiLanguage, '生成推文', 'Generating promos')} {batchPromo.done + 1}/{batchPromo.total}
+            </div>
+            <button
+              type="button"
+              onClick={() => { batchPromoCancelRef.current = true; }}
+              className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              title={tx(uiLanguage, '取消（完成当前章后停止）', 'Cancel (stops after current)')}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 truncate mb-2">{batchPromo.current}</p>
+          <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-pink-500 transition-all"
+              style={{ width: `${Math.round((batchPromo.done / Math.max(1, batchPromo.total)) * 100)}%` }}
+            />
           </div>
         </div>
       )}
