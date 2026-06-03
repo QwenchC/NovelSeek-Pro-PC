@@ -81,21 +81,48 @@ body {
   @apply text-sm;
 }
 
+/* ── Global minimalist scrollbar ─────────────────────────────────────────────
+   Applies to EVERY scrollable element (not just .scrollbar-thin): a simple,
+   single-colour, single-block thumb on a transparent track — no track fill,
+   no arrow buttons. Colour follows the light / dark theme (.dark on <html>). */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d1d5db transparent; /* gray-300 thumb, transparent track */
+}
+.dark * {
+  scrollbar-color: #4b5563 transparent; /* gray-600 */
+}
+
+/* WebKit / Chromium (Tauri's webview) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #d1d5db; /* gray-300 */
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #9ca3af; /* gray-400 */
+}
+.dark ::-webkit-scrollbar-thumb {
+  background-color: #4b5563; /* gray-600 */
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: #6b7280; /* gray-500 */
+}
+
+/* .scrollbar-thin is kept as a no-op alias so existing usages still compile and
+   inherit the same global look. */
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {
     width: 8px;
     height: 8px;
-  }
-  
-  .scrollbar-thin::-webkit-scrollbar-track {
-    @apply bg-gray-100 dark:bg-gray-800;
-  }
-  
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
-  }
-  
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-400 dark:bg-gray-500;
   }
 }

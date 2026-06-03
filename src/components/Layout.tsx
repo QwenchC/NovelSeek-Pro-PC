@@ -1,4 +1,5 @@
 import { ReactNode, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/tauri';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { DialogHost } from './uiDialog';
@@ -16,6 +17,8 @@ export function Layout({ children }: LayoutProps) {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
+    // Sync the native window title bar to the theme (Windows immersive dark mode; no-op elsewhere).
+    invoke('set_window_theme', { dark: theme === 'dark' }).catch(() => {});
   }, [theme]);
 
   useEffect(() => {

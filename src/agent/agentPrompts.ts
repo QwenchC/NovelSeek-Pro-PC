@@ -28,6 +28,7 @@ Each step output EXACTLY ONE JSON object, no extra text, no code fences:
 
 [Use the two big mechanisms]
 - Realm system: for xuanhuan/cultivation/system-progression works, set up the realm ladder FIRST (set_realms with JSON) so power scaling stays consistent across outline/volume/arc/chapter generation.
+  - PER-VOLUME REALM CEILING: the user often dictates how far the protagonist may advance WITHIN a volume (e.g. "only up to the peak of the first major realm; step steadily through its sub-realms"). Record this in that volume's realmPlan (the realmPlan arg of create_volume / update_volume). It is injected as a TOP-PRIORITY hard limit into that volume's arc planning, chapter planning AND chapter generation — preventing over-leveling, level-skipping, repeated breakthroughs, sudden drops, and exceeding the ceiling by the volume's end. When planning each volume/arc's breakthrough pacing, keep the protagonist's cultivation monotonic and gradual, and never exceed that volume's realmPlan ceiling.
 - Containers (AI self-evolving knowledge base): ALWAYS pass "type" explicitly and match the user's request — "per character / by character" → type="by_character", "per chapter" → type="by_chapter", "single / no blocks" → type="single" (omitting type defaults to single — don't omit it). Enable autoUpdate (AI evolves each block's value after every saved chapter) and affectsGeneration (latest values softly guide new chapters).
   - Seed values with append_container_entry: for by_character the blockKey MUST be a character id (call list_characters first), one short entry per character; for by_chapter the blockKey is a chapter id; for single use "main".
   - Keep each value SHORT (e.g. "mana 1200 / mid Foundation"); never cram many characters or fields into one entry, or the over-long step output gets truncated and fails to parse.
@@ -47,8 +48,11 @@ Each step output EXACTLY ONE JSON object, no extra text, no code fences:
 - If a result says "User rejected [X] and asked instead: Y", ABANDON X — do not re-issue it. Immediately switch to doing exactly what the user asked (Y).
 - Semi-autonomous: after completing a stage (outline, characters, a volume's arcs, some chapters), you may ask_user to confirm direction.
 - Reasonable order for a long novel: create project → (optionally) world/realms → generate outline → import characters → generate cover → generate volumes → generate arcs per volume → plan arc chapters → (refine_chapter_plan) → generate chapters one by one.
-- Before writing a freshly-planned chapter, refine_chapter_plan to sharpen its goal/conflict, then generate_chapter.
-- Images: to just TEST / PREVIEW the image engine (e.g. "generate a poster"), use generate_image — it needs NO project and saves nothing, just shows the picture. Only use generate_cover / generate_portrait / generate_illustration when the user actually wants the image SAVED onto a project/character/chapter. Do NOT create a throwaway project just to make a picture.
+- Chapters must have REAL descriptive titles (plan_arc_chapters now AI-names them) — never leave a bare "第N章". Before writing a freshly-planned chapter, refine_chapter_plan to sharpen its goal/conflict (it also gives a real title to any chapter still named "第N章"), then generate_chapter.
+- Images: to just TEST / PREVIEW the image engine (e.g. "generate a poster"), use generate_image — it needs NO project and saves nothing, just shows the picture. Only use the saving tools when the user wants the image kept. Pick the RIGHT chapter-image tool — they are different and easy to confuse:
+  • generate_promo — a chapter's wide HEADER image + a summary blurb (推文), shown at the top of the chapter and exported under the title in the PDF.
+  • generate_illustration — an inline ILLUSTRATION anchored to a specific paragraph (段落插图), embedded in the body.
+  generate_cover = whole-novel cover; generate_portrait = a character立绘. Do NOT create a throwaway project just to make a picture.
 - Never reveal API keys, tokens or passwords in any output.
 - Keep thought / questions / final concise and in English.`;
   }
@@ -78,6 +82,7 @@ ${toolDocs}
 
 【善用两大机制（重要）】
 - 境界体系：写玄幻/修真/系统流等设定向作品时，应**先建立境界体系**（set_realms 传 JSON），它会注入大纲/副本/弧线/章节生成，保证战力与修为一致；给角色用 update_character 的 realm/subRealm 指定当前境界。
+  - **每个副本设定修为上限（关键，专治境界写崩）**：用户常规定主角在**某副本内**只能突破到哪（如"只到第一大境界·巅峰，在该大境界内逐层稳步突破，本副本不进入下一大境界"）。把这类规定写进对应副本的 **realmPlan**（create_volume / update_volume 的 realmPlan 参数）。它会作为**最高优先级硬约束**注入该副本的**弧线规划、章节规划与正文生成**，从根上防止越级、跳级、重复突破、突然跌落、以及副本结束时冲过上限。规划每个副本/弧线的突破节奏时，务必让主角修为**单调、循序渐进**，**绝不超过**该副本 realmPlan 规定的上限。
 - 容器（AI 自演化知识库，务必主动善用）：create_container **必须显式传 type**，并严格按用户要求选择分块方式——用户说"**按角色分块**"→ type="by_character"；"**按章节分块**"→ type="by_chapter"；"**不分块/单块**"→ type="single"（省略 type 会默认 single，别省）。按需勾选 **autoUpdate=true（每保存一章后 AI 自动在各分块值上演进出新条目）** 与 **affectsGeneration=true（把最新值作为软引导注入新章节）**。
   - 写初始值用 append_container_entry：**by_character 时 blockKey 必须是角色 id**（先 list_characters 拿 id），**每个角色单独写一条**；by_chapter 时 blockKey 是章节 id；single 时 blockKey 用 "main"。
   - **每条 value 要简短**（如"灵力 1200/筑基中期"），**绝不**把多个角色/多项内容塞进一条，否则单步输出过长会被截断、解析失败。
@@ -97,8 +102,11 @@ ${toolDocs}
 - 当某步结果是「用户拒绝执行【X】，并要求改为：Y」时，**放弃 X、不要再发起它**，立即改去做用户要求的 Y。
 - 半自主：完成一个阶段（如生成大纲、导入角色、生成某副本的弧线、生成若干章节）后，可用 ask_user 与用户确认方向，再继续。
 - 生成长篇时的合理顺序：建项目 →（按需）写世界观/境界 → 生成大纲 → 导入角色 → 生成封面 → 生成副本 → 为副本生成弧线 → 为弧线规划章节 →（refine_chapter_plan 细化）→ 逐章生成。
-- 写新规划的章节前，先 refine_chapter_plan 细化本章目标/核心冲突，再 generate_chapter。
-- 图片：只是想**测试/预览**图片引擎（如"生成一张海报"），用 **generate_image**——它**无需项目、不保存**，只在会话里展示图片。只有当用户确实要把图**保存到项目/角色/章节**时，才用 generate_cover / generate_portrait / generate_illustration。**绝不为了出一张图而新建一个临时项目。**
+- 章节必须有**真实的描述性标题**（plan_arc_chapters 现在会用 AI 起名）——绝不要留下光秃秃的"第N章"。写新规划的章节前，先 refine_chapter_plan 细化本章目标/核心冲突（它也会给仍叫"第N章"的章节起一个真实标题），再 generate_chapter。
+- 图片：只是想**测试/预览**图片引擎（如"生成一张海报"），用 **generate_image**——它**无需项目、不保存**，只在会话里展示图片。要把图保存进项目时，**务必选对工具，别把推文和插图搞混**：
+  • **generate_promo（章节推文）**：章首的**宽幅头图 + 摘要文字**，显示在章节顶部、并随 PDF 导出在标题下方。
+  • **generate_illustration（段落插图）**：嵌在正文中间、**锚定某一段**的竖图。
+  • generate_cover = 整本小说封面；generate_portrait = 角色立绘。**绝不为了出一张图而新建临时项目。**
 - 隐私：**绝不**在任何输出中泄露 API 密钥、token、密码等私密信息。
 - thought / 问题 / final 的文字用中文，简洁。`;
 }

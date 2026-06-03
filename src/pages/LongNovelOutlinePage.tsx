@@ -15,7 +15,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
-import { buildRealmSystemContext } from '@utils/cultivation';
+import { buildRealmSystemContext, buildVolumeRealmConstraint } from '@utils/cultivation';
 import { buildGenerationGuidance } from '@utils/containerAi';
 import { generateVolumes, generateArcsForVolume } from '@utils/volumeAi';
 import { VolumeEditModal } from '@components/VolumeEditModal';
@@ -494,9 +494,9 @@ export function LongNovelOutlinePage() {
     return next.id;
   };
 
-  const saveVolumeEdit = (volumeId: string, name: string, description: string) => {
+  const saveVolumeEdit = (volumeId: string, name: string, description: string, realmPlan: string) => {
     if (!id) return;
-    setVolumes(id, volumes.map((v) => (v.id === volumeId ? { ...v, name, description } : v)));
+    setVolumes(id, volumes.map((v) => (v.id === volumeId ? { ...v, name, description, realmPlan } : v)));
   };
 
   const deleteVolume = async (volumeId: string) => {
@@ -567,9 +567,11 @@ export function LongNovelOutlinePage() {
     try {
       const arcsInVol = arcs.filter((a) => a.volumeId === volume.id);
       const existingArcs = arcsInVol.map((a) => `- ${a.title}：${a.summary}`).join('\n');
+      const volConstraint = buildVolumeRealmConstraint(volume.realmPlan, volume.name, uiLanguage, 'plan');
+      const requirements = [reqs, volConstraint].filter((x) => x && x.trim()).join('\n\n');
       const gen = await generateArcsForVolume({
         count, volumeName: volume.name, volumeDescription: volume.description,
-        context: buildGenContext(), existingArcs, requirements: reqs,
+        context: buildGenContext(), existingArcs, requirements,
         textConfig: textModelConfig, uiLanguage,
       });
       if (gen.length === 0) {
@@ -1289,9 +1291,10 @@ export function LongNovelOutlinePage() {
         <VolumeEditModal
           initialName={editingVolume.name}
           initialDescription={editingVolume.description}
+          initialRealmPlan={editingVolume.realmPlan ?? ''}
           uiLanguage={uiLanguage}
           onClose={() => setEditingVolume(null)}
-          onSave={(name, description) => { saveVolumeEdit(editingVolume.id, name, description); setEditingVolume(null); }}
+          onSave={(name, description, realmPlan) => { saveVolumeEdit(editingVolume.id, name, description, realmPlan); setEditingVolume(null); }}
         />
       )}
     </div>

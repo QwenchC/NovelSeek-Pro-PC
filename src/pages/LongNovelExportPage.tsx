@@ -336,13 +336,35 @@ function isPrologueChapter(chapter: Chapter): boolean {
   return chapter.order_index === 0 || chapter.title.trim() === '序章' || normalizedTitle === 'prologue';
 }
 
+/** Strip a leading chapter-number prefix the stored title may already carry (e.g. "第3章 风起"
+ *  or "Chapter 3: ...") so we never produce "第N章 第N章". */
+function stripChapterNumberPrefix(title: string): string {
+  return title
+    .trim()
+    .replace(/^第\s*[0-9〇零一二三四五六七八九十百千两]+\s*[章节回][\s:：、.\-—　]*/u, '')
+    .replace(/^chapter\s+\d+[\s:：.\-—]*/i, '')
+    .trim();
+}
+
+/** Derive a short, title-like phrase from a chapter goal (for placeholder chapters whose `title`
+ *  is only a number). Takes the first clause, capped to a sensible length. */
+function shortTitleFromGoal(goal: string | undefined | null): string {
+  const first = (goal || '').trim().split(/[。！？\n,，；;.!?]/)[0].trim();
+  if (!first) return '';
+  return first.length > 28 ? `${first.slice(0, 28)}…` : first;
+}
+
 function getChapterDisplayTitle(chapter: Chapter, contentLanguage: 'zh' | 'en'): string {
   if (isPrologueChapter(chapter)) {
     return contentLanguage === 'en' ? 'Prologue' : '序章';
   }
-  return contentLanguage === 'en'
-    ? `Chapter ${chapter.order_index} ${chapter.title}`
-    : `第${chapter.order_index}章 ${chapter.title}`;
+  // Use the descriptive title; if the title is only a chapter-number, fall back to a short phrase
+  // derived from the chapter goal so the heading isn't just "第N章".
+  const cleaned = stripChapterNumberPrefix(chapter.title) || shortTitleFromGoal(chapter.outline_goal);
+  if (contentLanguage === 'en') {
+    return cleaned ? `Chapter ${chapter.order_index} ${cleaned}` : `Chapter ${chapter.order_index}`;
+  }
+  return cleaned ? `第${chapter.order_index}章 ${cleaned}` : `第${chapter.order_index}章`;
 }
 
 function ensureDataImage(image: string): string {
@@ -406,6 +428,19 @@ function drawContainedImage(
 
   pdf.addImage(image, meta.format, renderX, y, renderWidth, renderHeight, undefined, 'FAST');
   return renderHeight;
+}
+
+/** Fill the whole page with an image, keeping aspect ratio (scale-to-cover; overflow is clipped by
+ *  the page bounds). Used for the full-bleed novel cover. */
+function drawCoverFit(pdf: jsPDF, image: string, pageWidth: number, pageHeight: number): void {
+  const meta = getImageMeta(pdf, image);
+  if (!meta) return;
+  const scale = Math.max(pageWidth / meta.width, pageHeight / meta.height);
+  const renderWidth = meta.width * scale;
+  const renderHeight = meta.height * scale;
+  const x = (pageWidth - renderWidth) / 2;
+  const y = (pageHeight - renderHeight) / 2;
+  pdf.addImage(image, meta.format, x, y, renderWidth, renderHeight, undefined, 'FAST');
 }
 
 function truncateByWidth(pdf: jsPDF, text: string, maxWidth: number): string {
@@ -493,15 +528,14 @@ function estimateLineUnitLimit(pdf: jsPDF, maxWidth: number): number {
   return Math.max(24, Math.floor(maxWidth / 7));
 }
 
-function wrapParagraphForPdf(pdf: jsPDF, text: string, maxWidth: number): string[] {
+function wrapParagraphForPdf(pdf: jsPDF, text: string, maxWidth: number, indent = '　　'): string[] {
   const content = normalizeParagraphForWrap(text);
-  const indent = '　　';
-  if (!content) return [indent];
+  if (!content) return indent ? [indent] : [];
 
   const lineUnitLimit = estimateLineUnitLimit(pdf, maxWidth);
   const lines: string[] = [];
   let currentLine = indent;
-  let currentUnits = 2;
+  let currentUnits = [...indent].reduce((sum, ch) => sum + getCharWrapUnit(ch), 0);
 
   for (const char of content) {
     if (char === '\r' || char === '\n') continue;
@@ -538,7 +572,7 @@ function wrapParagraphForPdf(pdf: jsPDF, text: string, maxWidth: number): string
     lines.push(currentLine);
   }
 
-  return lines.length > 0 ? lines : [indent];
+  return lines.length > 0 ? lines : (indent ? [indent] : []);
 }
 
 function buildTextExportContent(
@@ -992,9 +1026,7 @@ export function LongNovelExportPage() {
       if (!fontOption) {
         throw new Error(tx(uiLanguage, '未找到可用系统字体，请先安装中文字体', 'No usable system font found. Install a font and retry.'));
       }
-      const authorLabel = contentLanguage === 'en' ? 'Author' : '作者';
-      const genreLabel = contentLanguage === 'en' ? 'Genre' : '类型';
-      const summaryLabel = contentLanguage === 'en' ? 'Summary' : '摘要';
+      const summaryPrefix = contentLanguage === 'en' ? 'Summary: ' : '摘要：';
       const noChapterContentLabel = contentLanguage === 'en' ? '(No chapter content yet)' : '（本章节暂无正文内容）';
       const tocLabel = contentLanguage === 'en' ? 'Contents' : '目录';
 
@@ -1033,29 +1065,32 @@ export function LongNovelExportPage() {
 
       fillPageWhite(pdf, pageWidth, pageHeight);
       if (hasCoverPage) {
-        let coverY = margin.top;
+        // Full-bleed cover image (keeps aspect ratio, fills the whole page; overflow clipped).
+        if (projectCover) {
+          drawCoverFit(pdf, projectCover, pageWidth, pageHeight);
+        }
 
-        pdf.setFontSize(30);
+        // Title near the top-center: no text box; white fill + black outline + soft shadow.
+        const anyPdf = pdf as any;
+        pdf.setFontSize(34);
         const titleLines = pdf.splitTextToSize(project.title, contentWidth) as string[];
-        pdf.text(titleLines, pageWidth / 2, coverY, { align: 'center' });
-        coverY += titleLines.length * 36 + 8;
+        const titleY = margin.top + 28;
 
-        if (project.author) {
-          pdf.setFontSize(14);
-          pdf.text(`${authorLabel}: ${project.author}`, pageWidth / 2, coverY, { align: 'center' });
-          coverY += 26;
-        }
+        // Drop shadow (semi-transparent black, slightly offset).
+        try { anyPdf.setGState(anyPdf.GState({ opacity: 0.5 })); } catch { /* GState unsupported */ }
+        pdf.setTextColor(0, 0, 0);
+        pdf.text(titleLines, pageWidth / 2 + 2, titleY + 2.5, { align: 'center', lineHeightFactor: 1.2 });
+        try { anyPdf.setGState(anyPdf.GState({ opacity: 1 })); } catch { /* noop */ }
 
-        if (project.genre) {
-          pdf.setFontSize(12);
-          pdf.text(`${genreLabel}: ${project.genre}`, pageWidth / 2, coverY, { align: 'center' });
-          coverY += 22;
-        }
+        // Main title: white fill, black stroke (outline).
+        pdf.setTextColor(255, 255, 255);
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(1.1);
+        pdf.text(titleLines, pageWidth / 2, titleY, { align: 'center', lineHeightFactor: 1.2, renderingMode: 'fillThenStroke' } as any);
 
-        const imageMaxHeight = Math.max(120, pageHeight - margin.bottom - coverY);
-        if (projectCover && imageMaxHeight > 0) {
-          drawContainedImage(pdf, projectCover, margin.left, coverY, contentWidth, imageMaxHeight);
-        }
+        // Reset draw state for the rest of the document.
+        pdf.setLineWidth(0.2);
+        pdf.setTextColor(0, 0, 0);
 
         pdf.addPage('a4', 'p');
         tocStartPage = 2;
@@ -1083,77 +1118,118 @@ export function LongNovelExportPage() {
         }
       };
 
+      // ── Body layout constants ──
+      const bodyFontSize = 12;
+      const bodyLineHeight = 20;
+      const paraGap = 10;
+      const summaryFontSize = 10.5;
+      const summaryLineHeight = 16;
+      const chapterTitleFontSize = 15; // slightly larger than the body
+      const chapterTitleLineHeight = 22;
+      const maxIllustrationHeight = 250;
+      const bottomLimit = pageHeight - margin.bottom;
+
+      const measureIllustrationHeight = (image: string): number => {
+        const meta = getImageMeta(pdf, image);
+        if (!meta) return 0;
+        const scale = Math.min(contentWidth / meta.width, maxIllustrationHeight / meta.height, 1);
+        return meta.height * scale;
+      };
+      const placeIllustration = (image: string) => {
+        cursorY += 4;
+        drawContainedImage(pdf, image, margin.left, cursorY, contentWidth, maxIllustrationHeight);
+        cursorY += measureIllustrationHeight(image) + 16;
+      };
+
       for (const item of chapterRenderData) {
         startNewContentPage();
         chapterStartPage.set(item.chapter.id, pdf.getNumberOfPages());
 
-        pdf.setFontSize(22);
+        // 1) Chapter heading: 第N章 标题 — slightly larger than body + faux-bold (only one font face loaded).
+        pdf.setFontSize(chapterTitleFontSize);
+        pdf.setTextColor(0, 0, 0);
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(0.35);
         const chapterTitleLines = pdf.splitTextToSize(item.displayTitle, contentWidth) as string[];
-        pdf.text(chapterTitleLines, margin.left, cursorY);
-        cursorY += chapterTitleLines.length * 30 + 8;
+        pdf.text(chapterTitleLines, margin.left, cursorY, { renderingMode: 'fillThenStroke', lineHeightFactor: 1.25 } as any);
+        pdf.setLineWidth(0.2);
+        cursorY += chapterTitleLines.length * chapterTitleLineHeight + 4; // title sits closer to the promo image
 
-        if (!item.isPrologue && item.summary) {
-          pdf.setFontSize(12);
-          const summaryLines = pdf.splitTextToSize(`${summaryLabel}: ${item.summary}`, contentWidth) as string[];
-          ensureSpace(summaryLines.length * 20 + 1);
-          pdf.text(summaryLines, margin.left, cursorY);
-          cursorY += summaryLines.length * 20 + 1;
-        }
-
-        let hasChapterCover = false;
+        // 2) Chapter promo image (推文图片) — directly under the heading.
         if (includeChapterCover && item.chapterCover) {
           const preferredHeight = 230;
           ensureSpace(preferredHeight + 14);
           const renderedHeight = drawContainedImage(pdf, item.chapterCover, margin.left, cursorY, contentWidth, preferredHeight);
-          if (renderedHeight > 0) {
-            cursorY += renderedHeight + 8;
-            hasChapterCover = true;
+          if (renderedHeight > 0) cursorY += renderedHeight + 10;
+        }
+
+        // 3) Summary (摘要：…) — under the promo image; smaller + lighter; forbidden line-start applied.
+        if (!item.isPrologue && item.summary) {
+          pdf.setFontSize(summaryFontSize);
+          pdf.setTextColor(120, 120, 120);
+          const summaryLines = wrapParagraphForPdf(pdf, `${summaryPrefix}${item.summary}`, contentWidth, '');
+          for (const line of summaryLines) {
+            if (cursorY + summaryLineHeight > bottomLimit) startNewContentPage();
+            pdf.text(line, margin.left, cursorY);
+            cursorY += summaryLineHeight;
           }
+          cursorY += 16; // more breathing room between summary and body
+          pdf.setTextColor(0, 0, 0);
         }
 
-        if (hasChapterCover) {
-          ensureSpace(40);
-          cursorY += 30;
-        } else {
-          ensureSpace(12);
-          cursorY += 8;
-        }
-
+        // 4) Body — line-level rendering so each page fills tightly; illustrations that don't fit are
+        //    deferred so the following text fills the page first, then the image lands on the next page.
+        pdf.setFontSize(bodyFontSize);
         if (item.paragraphs.length === 0) {
-          ensureSpace(24);
-          pdf.setFontSize(12);
+          if (cursorY + 22 > bottomLimit) startNewContentPage();
           pdf.text(noChapterContentLabel, margin.left, cursorY);
           cursorY += 22;
         } else {
+          const deferred: string[] = [];
+          const flushDeferred = () => {
+            while (deferred.length) {
+              const h = measureIllustrationHeight(deferred[0]);
+              if (h <= 0) { deferred.shift(); continue; }
+              if (cursorY + h + 12 > bottomLimit) break; // still no room → keep deferring
+              placeIllustration(deferred[0]);
+              deferred.shift();
+            }
+          };
+
           for (let index = 0; index < item.paragraphs.length; index += 1) {
             const anchor = index + 1;
-            const paragraph = item.paragraphs[index];
-            const paragraphLines = wrapParagraphForPdf(pdf, paragraph, contentWidth);
-            const paragraphLineHeight = 20;
+            pdf.setFontSize(bodyFontSize);
+            const paragraphLines = wrapParagraphForPdf(pdf, item.paragraphs[index], contentWidth);
+            for (const line of paragraphLines) {
+              if (cursorY + bodyLineHeight > bottomLimit) startNewContentPage();
+              pdf.text(line, margin.left, cursorY);
+              cursorY += bodyLineHeight;
+            }
+            cursorY += paraGap;
 
-            ensureSpace(paragraphLines.length * paragraphLineHeight + 8);
-            pdf.setFontSize(12);
-            pdf.text(paragraphLines, margin.left, cursorY);
-            cursorY += paragraphLines.length * paragraphLineHeight + 10;
+            // After this (page-filling) paragraph, place any deferred illustration that now fits.
+            flushDeferred();
 
             if (includeParagraphIllustrations) {
               const anchorImages = item.illustrations.filter((illustration) => illustration.anchorIndex === anchor);
               for (const imageItem of anchorImages) {
-                ensureSpace(288);
-                cursorY += 2;
-                const imageHeight = drawContainedImage(
-                  pdf,
-                  imageItem.imageBase64,
-                  margin.left,
-                  cursorY,
-                  contentWidth,
-                  250
-                );
-                if (imageHeight > 0) {
-                  cursorY += imageHeight + 28;
+                const h = measureIllustrationHeight(imageItem.imageBase64);
+                if (h <= 0) continue;
+                if (cursorY + h + 12 <= bottomLimit) {
+                  placeIllustration(imageItem.imageBase64);
+                } else {
+                  deferred.push(imageItem.imageBase64); // let following text fill this page first
                 }
               }
             }
+          }
+
+          // Flush any still-deferred illustrations at chapter end (new page if needed).
+          for (const image of deferred) {
+            const h = measureIllustrationHeight(image);
+            if (h <= 0) continue;
+            if (cursorY + h + 12 > bottomLimit) startNewContentPage();
+            placeIllustration(image);
           }
         }
       }
@@ -1429,41 +1505,54 @@ export function LongNovelExportPage() {
           </div>
           <div className="flex-1 overflow-auto">
             <div className="mx-auto max-w-[794px] bg-white text-black rounded-md shadow p-10 space-y-12">
-              {!isTextOnlyFormat && includeNovelCover && projectCover && (
-                <div className="bg-white rounded space-y-3">
-                  <img src={projectCover} alt={tx(uiLanguage, '小说封面', 'Novel Cover')} className="w-full max-h-[1020px] object-contain rounded" />
+              {!isTextOnlyFormat && includeNovelCover && projectCover ? (
+                // Full-bleed cover with the title overlaid near the top (mirrors the PDF cover page).
+                <div className="relative w-full overflow-hidden rounded-md bg-black" style={{ aspectRatio: '794 / 1123' }}>
+                  <img src={projectCover} alt={tx(uiLanguage, '小说封面', 'Novel Cover')} className="absolute inset-0 w-full h-full object-cover" />
+                  <div className="absolute inset-x-0 top-[7%] px-6 text-center">
+                    <h2
+                      className="text-3xl md:text-4xl font-bold text-white leading-snug break-words"
+                      style={{ textShadow: '0 2px 6px rgba(0,0,0,0.65)', WebkitTextStroke: '1px rgba(0,0,0,0.85)' }}
+                    >
+                      {project.title}
+                    </h2>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center space-y-3 border-b border-gray-200 pb-10">
+                  <h2 className="text-4xl font-bold text-gray-900">{project.title}</h2>
+                  {project.author && (
+                    <p className="text-gray-700">{contentLanguage === 'en' ? `Author: ${project.author}` : `作者：${project.author}`}</p>
+                  )}
+                  {project.genre && (
+                    <p className="text-gray-700">{contentLanguage === 'en' ? `Genre: ${project.genre}` : `类型：${project.genre}`}</p>
+                  )}
                 </div>
               )}
 
-              <div className="text-center space-y-3 border-b border-gray-200 pb-10">
-                <h2 className="text-4xl font-bold text-gray-900">{project.title}</h2>
-                {project.author && (
-                  <p className="text-gray-700">{contentLanguage === 'en' ? `Author: ${project.author}` : `作者：${project.author}`}</p>
-                )}
-                {project.genre && (
-                  <p className="text-gray-700">{contentLanguage === 'en' ? `Genre: ${project.genre}` : `类型：${project.genre}`}</p>
-                )}
-              </div>
-
               {chapterRenderData.map((item) => (
-                <article key={item.chapter.id} className="space-y-5 border-b border-gray-200 pb-12 bg-white">
-                  <h3 className="text-2xl font-semibold text-gray-900">{item.displayTitle}</h3>
+                <article key={item.chapter.id} className="border-b border-gray-200 pb-12 bg-white">
+                  {/* Heading — slightly larger than body + bold, sits close to the promo image. */}
+                  <h3 className="text-lg font-bold text-gray-900 mb-1.5">{item.displayTitle}</h3>
 
+                  {/* Chapter promo image — directly under the heading. */}
+                  {!isTextOnlyFormat && includeChapterCover && item.chapterCover && (
+                    <img
+                      src={item.chapterCover}
+                      alt={`${item.displayTitle} ${tx(uiLanguage, '推文', 'Promo')}`}
+                      className="w-full rounded max-h-[420px] object-contain bg-white mb-2"
+                    />
+                  )}
+
+                  {/* Summary — smaller + lighter; format 摘要：…  */}
                   {!item.isPrologue && item.summary && (
-                    <p className="text-sm text-gray-700 border-l-2 border-gray-300 pl-3">
+                    <p className="text-xs text-gray-400 leading-relaxed">
                       {contentLanguage === 'en' ? `Summary: ${item.summary}` : `摘要：${item.summary}`}
                     </p>
                   )}
 
-                  {!isTextOnlyFormat && includeChapterCover && item.chapterCover && (
-                    <img
-                      src={item.chapterCover}
-                      alt={`${item.displayTitle} ${tx(uiLanguage, '封面', 'Cover')}`}
-                      className="w-full rounded max-h-[420px] object-contain bg-white !mt-1 mb-6"
-                    />
-                  )}
-
-                  <div className="h-3" />
+                  {/* Extra separation between summary and body. */}
+                  <div className="h-5" />
 
                   {item.paragraphs.length === 0 ? (
                     <div className="space-y-3">
@@ -1502,7 +1591,7 @@ export function LongNovelExportPage() {
                           : [];
                         return (
                           <div key={`${item.chapter.id}-paragraph-${anchor}`} className="space-y-3">
-                            <p className="leading-8 text-[15px] text-gray-900">{paragraph}</p>
+                            <p className="leading-8 text-[15px] text-gray-900" style={contentLanguage === 'en' ? undefined : { textIndent: '2em' }}>{paragraph}</p>
                             {currentIllustrations.map((illustration) => (
                               <div key={illustration.id} className="border border-gray-200 rounded p-3 space-y-2 mt-1 mb-6">
                                 <div className="flex items-center justify-end">

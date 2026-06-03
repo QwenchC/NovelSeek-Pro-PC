@@ -163,6 +163,36 @@ pub fn list_system_fonts() -> Result<Vec<SystemFontOption>, String> {
     Ok(result)
 }
 
+/// Sync the native window title bar / caption to the app theme.
+/// On Windows this toggles DWM "immersive dark mode" so the OS title bar turns dark/light with the
+/// in-app theme. No-op on other platforms. Called from the frontend whenever the theme changes.
+#[tauri::command]
+pub fn set_window_theme(window: tauri::Window, dark: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+
+        let hwnd_raw = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        let hwnd = HWND(hwnd_raw);
+        let value: i32 = if dark { 1 } else { 0 };
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &value as *const i32 as *const core::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, dark);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_system_font_base64(file_name: String) -> Result<String, String> {
     if !is_safe_file_name(&file_name) {

@@ -166,6 +166,9 @@ export interface Volume {
   description: string;
   order: number;
   createdAt: string;
+  /** 本副本的修为/境界规划与上限（用户填写）。会作为硬约束注入本副本的章节规划与生成，
+   *  防止跨副本越级、重复突破、忽高忽低。例："主角只突破到微尘境·巅峰，在微尘境内逐层稳步推进，不进入下一大境界"。 */
+  realmPlan?: string;
 }
 
 // ── 成长路线 (Character Growth) ────────────────────────────────
@@ -701,6 +704,9 @@ interface AppState {
   appendAgentStep: (sessionId: string, step: AgentStep) => void;
   /** Patch a session's fields (focus / autoApprove / steps). */
   patchAgentSession: (sessionId: string, patch: Partial<AgentSession>) => void;
+  /** Max autonomous steps per agent run before it pauses (user-adjustable). Persisted. */
+  agentMaxSteps: number;
+  setAgentMaxSteps: (n: number) => void;
 
   // ── Agent run-time (NOT persisted — resets to idle on reload) ──
   agentStatus: 'idle' | 'running' | 'awaiting_user' | 'awaiting_confirm';
@@ -1414,6 +1420,8 @@ export const useAppStore = create<AppState>()(
       setAgentStatus: (agentStatus) => set({ agentStatus }),
       setAgentRunSessionId: (agentRunSessionId) => set({ agentRunSessionId }),
       setAgentPendingConfirm: (agentPendingConfirm) => set({ agentPendingConfirm }),
+      agentMaxSteps: 40,
+      setAgentMaxSteps: (n) => set({ agentMaxSteps: Math.max(5, Math.min(200, Math.floor(Number(n)) || 40)) }),
       chaptersVersion: 0,
       bumpChaptersVersion: () => set((state) => ({ chaptersVersion: state.chaptersVersion + 1 })),
     }),
@@ -1450,6 +1458,7 @@ export const useAppStore = create<AppState>()(
         embeddingConfig: state.embeddingConfig,
         summariesEnabled: state.summariesEnabled,
         entitiesEnabled: state.entitiesEnabled,
+        agentMaxSteps: state.agentMaxSteps,
         agentSessions: state.agentSessions,
         agentSessionOrder: state.agentSessionOrder,
         agentCurrentSessionId: state.agentCurrentSessionId,

@@ -6,10 +6,11 @@ import { Button } from '@components/Button';
 import { uiConfirm } from '@components/uiDialog';
 import {
   ArrowLeft, Plus, Edit2, Trash2, Users, Network,
-  Clock, Save, X, Star, ChevronDown, ChevronUp, Sparkles, StopCircle, Sprout,
+  Clock, Save, X, Star, ChevronDown, ChevronUp, Sparkles, StopCircle, Sprout, Image,
 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/tauri';
+import { aiApi } from '@services/api';
 import { tx } from '@utils/i18n';
 import { useSmartBack } from '@utils/useSmartBack';
 import { buildRealmSystemContext } from '@utils/cultivation';
@@ -278,6 +279,9 @@ export function LongNovelCharactersPage() {
               ...newChars.map((c, i) => ({ ...c, id: `char-import-${ts}-${i}` })),
             ]);
           }}
+          onUpdateChar={(charId, patch) => {
+            setCharacters(id, characters.map((c) => (c.id === charId ? { ...c, ...patch } : c)));
+          }}
         />
       )}
 
@@ -338,7 +342,7 @@ export function LongNovelCharactersPage() {
 
 // ── Characters Tab ────────────────────────────────────────────
 function CharactersTab({
-  characters, uiLanguage, onEdit, onDelete, onAdd, projectId, onImportChars,
+  characters, uiLanguage, onEdit, onDelete, onAdd, projectId, onImportChars, onUpdateChar,
 }: {
   characters: Character[];
   uiLanguage: 'zh' | 'en';
@@ -347,10 +351,12 @@ function CharactersTab({
   onAdd: () => void;
   projectId: string;
   onImportChars: (chars: Omit<Character, 'id'>[]) => void;
+  onUpdateChar: (charId: string, patch: Partial<Character>) => void;
 }) {
   const {
     getLongNovelOutline, textModelConfig,
     getCultivationRealms, getCharacterRealmEvents,
+    pollinationsKey, imageEngine, comfyUIUrl,
   } = useAppStore();
   const outline = getLongNovelOutline(projectId);
   const [isGenChars, setIsGenChars] = useState(false);
@@ -358,6 +364,50 @@ function CharactersTab({
   const [parsedChars, setParsedChars] = useState<Omit<Character, 'id'>[] | null>(null);
   const genCharsCancelRef = useRef(false);
   const genCharsTextRef = useRef('');
+
+  // Manual portrait (立绘) generation with a custom style hint.
+  const [portraitTarget, setPortraitTarget] = useState<Character | null>(null);
+  const [portraitStyle, setPortraitStyle] = useState('');
+  const [isGenPortrait, setIsGenPortrait] = useState(false);
+  const [portraitErr, setPortraitErr] = useState<string | null>(null);
+
+  const hasValidTextConfig =
+    textModelConfig.apiKey.trim().length > 0 && textModelConfig.apiUrl.trim().length > 0 && textModelConfig.model.trim().length > 0;
+
+  const handleGeneratePortrait = async () => {
+    if (!portraitTarget || isGenPortrait) return;
+    if (!hasValidTextConfig) { setPortraitErr(tx(uiLanguage, '请先在设置中配置文本模型', 'Configure a text model in Settings first')); return; }
+    setIsGenPortrait(true);
+    setPortraitErr(null);
+    try {
+      const promptResult = await aiApi.generateCharacterPortraitPrompt({
+        name: portraitTarget.name,
+        appearance: portraitTarget.appearance || null,
+        role: portraitTarget.role || null,
+        personality: portraitTarget.personality || null,
+        background: portraitTarget.background || null,
+        motivation: portraitTarget.motivation || null,
+        style: portraitStyle.trim() || null,
+        text_config: textModelConfig,
+      });
+      const portraitBase64 = await invoke<string>('generate_promo_image', {
+        prompt: promptResult.image_prompt,
+        width: 768,
+        height: 1024,
+        model: 'zimage',
+        pollinationsKey: pollinationsKey || null,
+        engine: imageEngine,
+        comfyuiUrl: comfyUIUrl || null,
+      });
+      onUpdateChar(portraitTarget.id, { portraitBase64, portraitPrompt: promptResult.image_prompt });
+      setPortraitTarget(null);
+      setPortraitStyle('');
+    } catch (e) {
+      setPortraitErr(typeof e === 'string' ? e : (e as Error)?.message || tx(uiLanguage, '立绘生成失败', 'Portrait generation failed'));
+    } finally {
+      setIsGenPortrait(false);
+    }
+  };
   const existingNames = useMemo(() => new Set(characters.map((c) => c.name)), [characters]);
   const newCharsToImport = useMemo(
     () => (parsedChars ?? []).filter((c) => !existingNames.has(c.name)),
@@ -533,13 +583,20 @@ function CharactersTab({
                   {tx(uiLanguage, '动机：', 'Motivation: ')}{char.motivation}
                 </p>
               )}
-              <div className="flex gap-2 pt-1">
+              <div className="flex gap-2 pt-1 flex-wrap">
                 <button
                   onClick={() => onEdit(char)}
                   className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-600 transition-colors"
                 >
                   <Edit2 className="w-3.5 h-3.5" />
                   {tx(uiLanguage, '编辑', 'Edit')}
+                </button>
+                <button
+                  onClick={() => { setPortraitTarget(char); setPortraitStyle(''); setPortraitErr(null); }}
+                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-purple-600 transition-colors"
+                >
+                  <Image className="w-3.5 h-3.5" />
+                  {char.portraitBase64 ? tx(uiLanguage, '重绘立绘', 'Regen Portrait') : tx(uiLanguage, '生成立绘', 'Portrait')}
                 </button>
                 <button
                   onClick={() => onDelete(char.id)}
@@ -551,6 +608,41 @@ function CharactersTab({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Manual portrait generation dialog (with a custom 画风 / style hint). */}
+      {portraitTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget && !isGenPortrait) setPortraitTarget(null); }}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-5 w-full max-w-md shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+              <Image className="w-4 h-4 text-purple-500" />
+              {tx(uiLanguage, `为「${portraitTarget.name}」生成立绘`, `Portrait for "${portraitTarget.name}"`)}
+            </h3>
+            {!portraitTarget.appearance?.trim() && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mb-2">
+                {tx(uiLanguage, '该角色暂无「外貌」描述，将依据其它资料生成；建议先补全外貌以获得更稳定的形象。', 'No appearance description yet — generation uses other fields; add one for a more consistent look.')}
+              </p>
+            )}
+            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">{tx(uiLanguage, '画风（可选）', 'Style hint (optional)')}</label>
+            <input
+              type="text"
+              value={portraitStyle}
+              onChange={(e) => setPortraitStyle(e.target.value)}
+              placeholder={tx(uiLanguage, '如：水墨画、赛博朋克、动漫、写实…', 'e.g. ink wash, cyberpunk, anime, realistic…')}
+              className="w-full px-3 py-2 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              disabled={isGenPortrait}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleGeneratePortrait(); }}
+            />
+            {portraitErr && <p className="text-xs text-red-500 mt-2">{portraitErr}</p>}
+            <div className="flex gap-2 justify-end mt-4">
+              <Button variant="outline" onClick={() => setPortraitTarget(null)} disabled={isGenPortrait}>{tx(uiLanguage, '取消', 'Cancel')}</Button>
+              <Button onClick={handleGeneratePortrait} loading={isGenPortrait} className="bg-purple-600 hover:bg-purple-700">
+                {!isGenPortrait && <Image className="w-4 h-4 mr-1.5" />}
+                {tx(uiLanguage, '生成', 'Generate')}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

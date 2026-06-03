@@ -8,6 +8,7 @@ import {
   Library, FolderPlus, Sparkles, Plus, Edit2, Trash2, ChevronDown, ChevronUp, Check,
 } from 'lucide-react';
 import { generateVolumes, generateArcsForVolume } from '@utils/volumeAi';
+import { buildVolumeRealmConstraint } from '@utils/cultivation';
 import { confirmDialog } from '@utils/index';
 import { uiPrompt } from '@components/uiDialog';
 import { tx } from '@utils/i18n';
@@ -82,8 +83,8 @@ export function VolumeArcPanel({ projectId, uiLanguage, compact = false }: { pro
     setExpandedVolumeId(next.id);
   };
 
-  const saveVolumeEdit = (vol: Volume, name: string, description: string) => {
-    setVolumes(projectId, volumes.map((v) => (v.id === vol.id ? { ...v, name, description } : v)));
+  const saveVolumeEdit = (vol: Volume, name: string, description: string, realmPlan: string) => {
+    setVolumes(projectId, volumes.map((v) => (v.id === vol.id ? { ...v, name, description, realmPlan } : v)));
   };
 
   const handleDeleteVolume = async (vol: Volume) => {
@@ -163,11 +164,13 @@ export function VolumeArcPanel({ projectId, uiLanguage, compact = false }: { pro
     setVolGenError(null);
     try {
       const inVol = arcs.filter((a) => a.volumeId === volume.id);
+      const volConstraint = buildVolumeRealmConstraint(volume.realmPlan, volume.name, uiLanguage, 'plan');
+      const requirements = [reqs, volConstraint].filter((x) => x && x.trim()).join('\n\n');
       const gen = await generateArcsForVolume({
         count, volumeName: volume.name, volumeDescription: volume.description,
         context: projectDescription.slice(0, 2000),
         existingArcs: inVol.map((a) => `- ${a.title}`).join('\n'),
-        requirements: reqs, textConfig: textModelConfig, uiLanguage,
+        requirements, textConfig: textModelConfig, uiLanguage,
       });
       if (gen.length === 0) { setVolGenError(tx(uiLanguage, 'AI 未返回有效弧线，请重试', 'AI returned no valid arcs — retry')); return; }
       let order = arcs.length;
@@ -359,9 +362,10 @@ export function VolumeArcPanel({ projectId, uiLanguage, compact = false }: { pro
         <VolumeEditModal
           initialName={editingVolume.name}
           initialDescription={editingVolume.description}
+          initialRealmPlan={editingVolume.realmPlan ?? ''}
           uiLanguage={uiLanguage}
           onClose={() => setEditingVolume(null)}
-          onSave={(name, description) => { saveVolumeEdit(editingVolume, name, description); setEditingVolume(null); }}
+          onSave={(name, description, realmPlan) => { saveVolumeEdit(editingVolume, name, description, realmPlan); setEditingVolume(null); }}
         />
       )}
     </div>

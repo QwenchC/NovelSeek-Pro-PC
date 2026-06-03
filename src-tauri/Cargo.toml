@@ -1,6 +1,6 @@
 [package]
 name = "novelseek-ultra-pc"
-version = "2.0.0"
+version = "2.0.1"
 description = "NovelSeek Ultra — AI long-form novel writing studio (PC / Tauri)"
 authors = ["NovelSeek Team"]
 license = ""
@@ -35,6 +35,10 @@ base64 = "0.21"
 # Edge "Read Aloud" TTS over WebSocket (mirrors the Android EdgeTtsService mechanism).
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 sha2 = "0.10"
+
+# Windows-only: toggle the native title bar between light/dark (DWM immersive dark mode) to match the app theme.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.48", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

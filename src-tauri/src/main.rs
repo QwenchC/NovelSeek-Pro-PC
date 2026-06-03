@@ -74,6 +74,7 @@ async fn main() {
             commands::stream::generate_promo_image,
             commands::system::list_system_fonts,
             commands::system::get_system_font_base64,
+            commands::system::set_window_theme,
             commands::knowledge::kb_index_chapter,
             commands::knowledge::kb_retrieve_context,
             commands::knowledge::kb_forget_source,

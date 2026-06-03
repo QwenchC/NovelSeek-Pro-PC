@@ -3,7 +3,7 @@ import { useAppStore } from '@store/index';
 import type { AgentStep } from '@store/index';
 import { Button } from '@components/Button';
 import {
-  Bot, User, Send, Square, Trash2, Wrench, CheckCircle2, AlertTriangle, ShieldCheck,
+  Bot, User, Send, Square, Trash2, Wrench, CheckCircle2, AlertTriangle, ShieldCheck, Footprints,
   Plus, MessageSquarePlus, Pencil, ChevronDown, Play, Loader2,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -25,6 +25,7 @@ export function AgentPage() {
     agentStatus, agentRunSessionId, agentPendingConfirm,
     ensureAgentSession, newAgentSession, switchAgentSession, deleteAgentSession,
     renameAgentSession, patchAgentSession, getAgentSession,
+    agentMaxSteps, setAgentMaxSteps,
   } = useAppStore();
   const agentStreamingText = useAgentStream((st) => st.text);
 
@@ -199,6 +200,18 @@ export function AgentPage() {
           )}
         </div>
 
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 select-none" title={tx(uiLanguage, '每轮自动执行的最大步数，达到后自动暂停（可点「继续执行」）', 'Max autonomous steps per run before it pauses (you can Continue)')}>
+          <Footprints className="w-3.5 h-3.5" />
+          {tx(uiLanguage, '最大步数', 'Max steps')}
+          <input
+            type="number"
+            min={5}
+            max={200}
+            value={agentMaxSteps}
+            onChange={(e) => setAgentMaxSteps(parseInt(e.target.value, 10) || 40)}
+            className="w-14 px-1.5 py-0.5 border rounded dark:bg-gray-700 dark:border-gray-600 text-center focus:outline-none focus:ring-1 focus:ring-purple-500"
+          />
+        </label>
         <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer select-none" title={tx(uiLanguage, '自动批准所有需确认的操作', 'Auto-approve all confirm-gated actions')}>
           <input type="checkbox" checked={autoApprove} onChange={(e) => cur && patchAgentSession(cur, { autoApprove: e.target.checked })} className="accent-purple-600" />
           <ShieldCheck className="w-3.5 h-3.5" />

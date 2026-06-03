@@ -279,13 +279,14 @@ export function Sidebar() {
     return set;
   }, [folders]);
 
-  // Recent uncategorized projects (up to 8)
+  // Uncategorized projects (most-recently-updated first). NO recency cap: a flat top-N would hide
+  // whole novel types when one type dominates recent edits (e.g. all long novels), which made short
+  // novels disappear from the list. The container scrolls, so showing every uncategorized project is fine.
   const uncategorizedProjects = useMemo(
     () =>
       [...projects]
         .filter((p) => !folderedProjectIds.has(p.id))
-        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-        .slice(0, 8),
+        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
     [projects, folderedProjectIds]
   );
 

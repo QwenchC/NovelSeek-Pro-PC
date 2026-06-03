@@ -12,7 +12,7 @@ import { listen } from '@tauri-apps/api/event';
 import { generateVolumes, generateArcsForVolume } from '@utils/volumeAi';
 import { buildGenerationGuidance, runChapterAutoUpdates } from '@utils/containerAi';
 import { buildSnapshotContent, restoreSnapshot } from '@utils/snapshots';
-import { buildRealmSystemContext } from '@utils/cultivation';
+import { buildRealmSystemContext, buildVolumeRealmConstraint } from '@utils/cultivation';
 import { stripChapterHeading } from '@utils/index';
 import { useAgentStream } from './agentStream';
 
@@ -122,6 +122,7 @@ function buildChapterArcContext(pid: string, chapter: Chapter): string {
   const vols = s().getVolumes(pid);
   const arc = arcOfChapter(arcs, chapter);
   const out: string[] = [];
+  let volConstraint = '';
   if (arc) {
     const vol = arc.volumeId ? vols.find((v) => v.id === arc.volumeId) : undefined;
     out.push('【本章所属（副本/弧线）】');
@@ -135,8 +136,10 @@ function buildChapterArcContext(pid: string, chapter: Chapter): string {
     if (done.length) out.push(`已完成弧线：${done.map((a) => a.title).join(' → ')}`);
     if (upcoming.length) out.push(`后续弧线（暂不展开）：${upcoming.map((a) => a.title).join('、')}`);
     if (arc.status === 'ending') out.push('提示：本弧线进入结尾阶段，应推动剧情走向阶段性收束。');
+    if (vol) volConstraint = buildVolumeRealmConstraint(vol.realmPlan, vol.name, 'zh', 'generate');
   }
-  return out.join('\n');
+  // The per-volume realm ceiling goes LAST so it reads as the final, overriding instruction.
+  return [out.join('\n'), volConstraint].filter((x) => x && x.trim()).join('\n\n');
 }
 
 /**
@@ -330,12 +333,12 @@ export const AGENT_TOOLS: AgentTool[] = [
   }},
 
   // ── Volumes ──
-  { name: 'create_volume', desc: '新建副本。args: projectId?, name, description?', run: async (a, ctx) => {
+  { name: 'create_volume', desc: '新建副本。args: projectId?, name, description?, realmPlan?(本副本修为/境界上限的硬约束，如"主角只突破到第一大境界巅峰，逐层稳步突破")', run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
     const vols = s().getVolumes(pid);
-    const v: Volume = { id: uid('vol'), name: String(a.name || `副本${vols.length + 1}`), description: a.description || '', order: vols.length, createdAt: new Date().toISOString() };
+    const v: Volume = { id: uid('vol'), name: String(a.name || `副本${vols.length + 1}`), description: a.description || '', order: vols.length, createdAt: new Date().toISOString(), realmPlan: a.realmPlan || '' };
     s().setVolumes(pid, [...vols, v]);
-    return `已创建副本：${v.id} ${v.name}`;
+    return `已创建副本：${v.id} ${v.name}${v.realmPlan ? `（已设修为上限）` : ''}`;
   }},
   { name: 'generate_volumes', desc: 'AI 生成若干副本（不生成弧线）。args: projectId?, count, requirements?', sensitive: true, run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
@@ -352,12 +355,12 @@ export const AGENT_TOOLS: AgentTool[] = [
     if (!vols.length) return '（暂无副本）';
     return vols.map((v) => `- ${v.id} | ${v.name} | ${arcs.filter((ar) => ar.volumeId === v.id).length} 条弧线`).join('\n');
   }},
-  { name: 'update_volume', desc: '修改副本信息。args: projectId?, volumeId, name?, description?', run: async (a, ctx) => {
+  { name: 'update_volume', desc: '修改副本信息。args: projectId?, volumeId, name?, description?, realmPlan?(本副本修为/境界上限的硬约束；设定后规划与生成都会严格遵守)', run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
     const vols = s().getVolumes(pid);
     if (!vols.some((v) => v.id === a.volumeId)) throw new Error('副本不存在');
-    s().setVolumes(pid, vols.map((v) => v.id === a.volumeId ? { ...v, name: a.name ?? v.name, description: a.description ?? v.description } : v));
-    return '副本已更新';
+    s().setVolumes(pid, vols.map((v) => v.id === a.volumeId ? { ...v, name: a.name ?? v.name, description: a.description ?? v.description, realmPlan: a.realmPlan ?? v.realmPlan } : v));
+    return `副本已更新${a.realmPlan != null ? '（已更新修为上限）' : ''}`;
   }},
   { name: 'generate_arcs_for_volume', desc: '在某副本内 AI 生成若干弧线。args: projectId?, volumeId, count, requirements?', sensitive: true, run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
@@ -366,7 +369,9 @@ export const AGENT_TOOLS: AgentTool[] = [
     const count = Math.max(1, Math.min(12, Number(a.count) || 3));
     const arcs = s().getPlotArcs(pid);
     const inVol = arcs.filter((ar) => ar.volumeId === vol.id);
-    const gen = await generateArcsForVolume({ count, volumeName: vol.name, volumeDescription: vol.description, context: s().getLongNovelOutline(pid).slice(0, 3000), existingArcs: inVol.map((ar) => `- ${ar.title}`).join('\n'), requirements: a.requirements || '', textConfig: ctx.textConfig, uiLanguage: ctx.uiLanguage });
+    const volConstraint = buildVolumeRealmConstraint(vol.realmPlan, vol.name, ctx.uiLanguage, 'plan');
+    const requirements = [a.requirements || '', volConstraint].filter((x) => x && x.trim()).join('\n\n');
+    const gen = await generateArcsForVolume({ count, volumeName: vol.name, volumeDescription: vol.description, context: s().getLongNovelOutline(pid).slice(0, 3000), existingArcs: inVol.map((ar) => `- ${ar.title}`).join('\n'), requirements, textConfig: ctx.textConfig, uiLanguage: ctx.uiLanguage });
     let order = arcs.length;
     const names: string[] = [];
     for (const g of gen) { s().addPlotArc(pid, { title: g.title, summary: g.summary, order: order++, status: 'upcoming', chapterCount: g.chapter_count, volumeId: vol.id }); names.push(g.title); }
@@ -379,22 +384,53 @@ export const AGENT_TOOLS: AgentTool[] = [
     s().updatePlotArc(pid, a.arcId, { title: a.title ?? arc.title, summary: a.summary ?? arc.summary, chapterCount: a.chapterCount != null ? Number(a.chapterCount) : arc.chapterCount, status: a.status ?? arc.status });
     return '弧线已更新';
   }},
-  { name: 'plan_arc_chapters', desc: '为某弧线规划并创建若干空白章节。args: projectId?, arcId, count', sensitive: true, run: async (a, ctx) => {
+  { name: 'plan_arc_chapters', desc: '为某弧线用 AI 规划若干章节（每章给出真实「章节标题」+「本章目标」），并创建为待写章节。args: projectId?, arcId, count', sensitive: true, run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
     const arc = s().getPlotArcs(pid).find((x) => x.id === a.arcId);
     if (!arc) throw new Error('弧线不存在');
     const count = Math.max(1, Math.min(30, Number(a.count) || 5));
+
+    // AI-plan real chapter titles + goals (grounded in outline / arc / realms). Never bare "第N章".
+    const outline = s().getLongNovelOutline(pid).slice(0, 2500);
+    const realm = buildRealmSystemContext(s().getCultivationRealms(pid), s().getCharacters(pid), s().getCharacterRealmEvents(pid), [], { uiLanguage: ctx.uiLanguage, ladderOnly: true });
+    const planVol = arc.volumeId ? s().getVolumes(pid).find((v) => v.id === arc.volumeId) : undefined;
+    const realmConstraint = planVol ? buildVolumeRealmConstraint(planVol.realmPlan, planVol.name, ctx.uiLanguage, 'plan') : '';
+    const sys = '你为长篇小说的某条剧情弧线规划具体章节。每章给出一个简洁有吸引力的"章节标题"（4-14字，体现本章看点，**不要带"第N章"前缀或序号**）与"本章目标"（1-2句，具体可执行）。规划修为/突破节奏时必须严格遵守下方"修为/境界硬约束"，不得安排越级、跳级、跌落或超过本副本上限的境界变化。只输出 JSON 数组、无其它文字：[{"title":"章节标题","goal":"本章目标"}]';
+    const user = [
+      `弧线：${arc.title}`,
+      arc.summary ? `弧线概述：${arc.summary}` : '',
+      arc.miniOutline ? `弧线细纲：\n${arc.miniOutline.slice(0, 800)}` : '',
+      outline ? `【大纲】\n${outline}` : '',
+      realm || '',
+      realmConstraint || '',
+      `请规划 ${count} 个章节。`,
+    ].filter(Boolean).join('\n\n');
+    const items = parseJsonArray(await aiApi.chat(user, ctx.textConfig, sys));
+
+    // Strip any stray chapter-number prefix the model may still prepend.
+    const stripNum = (t: string) => t.trim()
+      .replace(/^第\s*[0-9〇零一二三四五六七八九十百千两]+\s*[章节回][\s:：、.\-—　]*/u, '')
+      .replace(/^chapter\s+\d+[\s:：.\-—]*/i, '').trim();
+
     const chs = await chapterApi.getByProject(pid);
     let order = chs.length;
     const created: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const c = await chapterApi.create({ project_id: pid, title: `第${order + 1}章`, order_index: order + 1, outline_goal: `${arc.title} - 第${i + 1}节`, conflict: '' });
+    const names: string[] = [];
+    const n = items.length > 0 ? Math.min(items.length, count) : count;
+    for (let i = 0; i < n; i++) {
+      const it = items[i] || {};
+      const title = (typeof it.title === 'string' ? stripNum(it.title) : '') || `第${order + 1}章`;
+      const goal = (typeof it.goal === 'string' && it.goal.trim()) ? it.goal.trim()
+        : (typeof it.summary === 'string' && it.summary.trim()) ? it.summary.trim()
+        : `${arc.title} - 第${i + 1}节`;
+      const c = await chapterApi.create({ project_id: pid, title, order_index: order + 1, outline_goal: goal, conflict: '' });
       await chapterApi.updateMeta(c.id, { arc_id: arc.id });
-      created.push(c.id); order++;
+      created.push(c.id); names.push(title); order++;
     }
-    s().updatePlotArc(pid, arc.id, { builtChapterIds: [...(arc.builtChapterIds || []), ...created], chapterCount: (arc.chapterCount || 0) + count, status: arc.status === 'upcoming' ? 'active' : arc.status });
+    s().updatePlotArc(pid, arc.id, { builtChapterIds: [...(arc.builtChapterIds || []), ...created], chapterCount: (arc.chapterCount || 0) + created.length, status: arc.status === 'upcoming' ? 'active' : arc.status });
     await refreshProjects();
-    return `已为《${arc.title}》创建 ${count} 章空白章节`;
+    await syncArcStatuses(pid);
+    return `已为《${arc.title}》规划并创建 ${created.length} 章：${names.join('、')}`;
   }},
 
   // ── Chapters ──
@@ -767,9 +803,11 @@ export const AGENT_TOOLS: AgentTool[] = [
         });
       } catch { /* KB optional */ }
     }
-    const sys = '你为长篇小说的某一章细化写作规划。务必结合给定的大纲、副本/弧线、世界观/境界/容器知识库、相关记忆检索与上一章结尾，使本章规划与全书设定一致、不偏离走向。只输出 JSON：{"goal":"本章目标(1-2句，具体可执行)","conflict":"核心冲突(1句)"}，不要其它文字。';
+    // If the title is still a placeholder number (e.g. "第N章"), ask for a real title too.
+    const titleIsPlaceholder = /^第\s*[0-9〇零一二三四五六七八九十百千两]+\s*章\s*$/u.test((ch.title || '').trim()) || !(ch.title || '').trim();
+    const sys = `你为长篇小说的某一章细化写作规划。务必结合给定的大纲、副本/弧线、世界观/境界/容器知识库、相关记忆检索与上一章结尾，使本章规划与全书设定一致、不偏离走向。只输出 JSON：{${titleIsPlaceholder ? '"title":"简洁有吸引力的章节标题(4-14字，不带\\"第N章\\"前缀),"' : ''}"goal":"本章目标(1-2句，具体可执行)","conflict":"核心冲突(1句)"}，不要其它文字。`;
     const user = [
-      `第${ch.order_index}章《${ch.title}》`,
+      `第${ch.order_index}章${titleIsPlaceholder ? '（暂无标题，请起一个）' : `《${ch.title}》`}`,
       ch.outline_goal ? `现有目标：${ch.outline_goal}` : '',
       outline ? `【大纲】\n${outline}` : '',
       arcCtx,
@@ -779,8 +817,17 @@ export const AGENT_TOOLS: AgentTool[] = [
       prev ? `上一章结尾：${(prev.final_text || prev.draft_text || '').slice(-400)}` : '',
     ].filter(Boolean).join('\n\n');
     const o = parseJsonObject(await aiApi.chat(user, ctx.textConfig, sys));
-    await chapterApi.updateMeta(ch.id, { outline_goal: o.goal ?? ch.outline_goal, conflict: o.conflict ?? ch.conflict });
-    return `已细化规划——目标：${o.goal || ch.outline_goal || '(未变)'}｜冲突：${o.conflict || ch.conflict || '(未变)'}`;
+    const patch: Record<string, any> = { outline_goal: o.goal ?? ch.outline_goal, conflict: o.conflict ?? ch.conflict };
+    let newTitle = ch.title;
+    if (titleIsPlaceholder && typeof o.title === 'string') {
+      const t = o.title.trim()
+        .replace(/^第\s*[0-9〇零一二三四五六七八九十百千两]+\s*[章节回][\s:：、.\-—　]*/u, '')
+        .replace(/^chapter\s+\d+[\s:：.\-—]*/i, '').trim();
+      if (t) { patch.title = t; newTitle = t; }
+    }
+    await chapterApi.updateMeta(ch.id, patch);
+    s().bumpChaptersVersion();
+    return `已细化规划——标题：${newTitle || '(未变)'}｜目标：${o.goal || ch.outline_goal || '(未变)'}｜冲突：${o.conflict || ch.conflict || '(未变)'}`;
   }},
   { name: 'delete_arc', desc: '删除某剧情弧线（不删章节）。args: projectId?, arcId', sensitive: true, run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
@@ -1008,7 +1055,25 @@ export const AGENT_TOOLS: AgentTool[] = [
     ctx.pushImage?.((ctx.uiLanguage === 'en' ? `${c.name} portrait` : `${c.name} 立绘`), dataUrl);
     return `已为 ${c.name} 生成立绘`;
   }},
-  { name: 'generate_illustration', desc: '为某章生成插图（可传 prompt，否则按正文节选）。args: projectId?, chapterId, prompt?, paragraphIndex?(锚定第几段,默认1)', sensitive: true, run: async (a, ctx) => {
+  { name: 'generate_promo', desc: '为某章生成「章节推文」：章首宽幅头图（推文配图）+ 一段摘要文字，保存到该章的推文中，会显示在章节生成页并随 PDF 导出（标题下方）。⚠ 这不是段落插图——段落插图请用 generate_illustration。args: projectId?, chapterId, style?(画风，可选，如 水墨/赛博朋克)', sensitive: true, run: async (a, ctx) => {
+    const pid = resolvePid(a, ctx);
+    const ch = (await chapterApi.getByProject(pid)).find((c) => c.id === a.chapterId);
+    if (!ch) throw new Error('章节不存在');
+    const content = ch.final_text || ch.draft_text || '';
+    if (content.replace(/\s/g, '').length < 100) throw new Error('章节正文太少（约需 ≥100 字）才能生成推文');
+    const promoData = await invoke<{ image_prompt: string; summary: string }>('generate_chapter_promo', {
+      chapterTitle: ch.title || (ctx.uiLanguage === 'en' ? 'Untitled' : '未命名章节'),
+      chapterContent: content,
+      style: typeof a.style === 'string' && a.style.trim() ? a.style.trim() : null,
+      outputLanguage: ctx.uiLanguage === 'en' ? 'en' : 'zh',
+      textConfig: ctx.textConfig,
+    });
+    const dataUrl = await genImageDataUrl(promoData.image_prompt, 1200, 400);
+    s().setPromo(ch.id, { imagePrompt: promoData.image_prompt, summary: promoData.summary, imageBase64: dataUrl });
+    ctx.pushImage?.((ctx.uiLanguage === 'en' ? `Promo · ${ch.title}` : `推文配图 · 第${ch.order_index}章`), dataUrl);
+    return `已为第${ch.order_index}章《${ch.title}》生成章节推文（头图 + 摘要）。摘要：${(promoData.summary || '').slice(0, 80)}…`;
+  }},
+  { name: 'generate_illustration', desc: '为某章生成「段落插图」：嵌入正文中间、锚定某一段的竖图。⚠ 这不是章节推文头图（推文请用 generate_promo）。args: projectId?, chapterId, prompt?(画面，留空则按正文节选), paragraphIndex?(锚定第几段,默认1)', sensitive: true, run: async (a, ctx) => {
     const pid = resolvePid(a, ctx);
     const ch = (await chapterApi.getByProject(pid)).find((c) => c.id === a.chapterId);
     if (!ch) throw new Error('章节不存在');
@@ -1023,7 +1088,7 @@ export const AGENT_TOOLS: AgentTool[] = [
     await chapterApi.update(ch.id, body, body, JSON.stringify(arr));
     await refreshProjects();
     ctx.pushImage?.((ctx.uiLanguage === 'en' ? `Illustration · ¶${anchor}` : `第${anchor}段插图`), dataUrl);
-    return `已生成并插入插图（锚定第 ${anchor} 段）`;
+    return `已生成并插入段落插图（锚定第 ${anchor} 段）`;
   }},
 ];
 

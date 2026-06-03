@@ -746,7 +746,7 @@ export function SettingsPage() {
     const bundle: BackupBundle = {
       version: BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
-      appVersion: '2.0.0',
+      appVersion: '2.0.1',
       data,
     };
 

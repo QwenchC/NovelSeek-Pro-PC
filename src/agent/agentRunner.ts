@@ -87,8 +87,9 @@ async function loop(sessionId: string) {
   s().setAgentStatus('running');
   s().setAgentRunSessionId(sessionId);
   const system = agentSystemPrompt(toolDocs(), lang());
+  const maxSteps = Math.max(5, Math.min(200, s().agentMaxSteps || MAX_STEPS));
   try {
-    for (let i = 0; i < MAX_STEPS; i++) {
+    for (let i = 0; i < maxSteps; i++) {
       if (stopFlag) { push(sessionId, 'error', tx(lang(), '已停止。', 'Stopped.')); break; }
 
       // Model call with retry (mirrors Android MODEL_RETRIES).
@@ -158,7 +159,7 @@ async function loop(sessionId: string) {
       try { result = await tool.run(args, toolCtx(sessionId)); }
       catch (e) { result = tx(lang(), `错误：${e instanceof Error ? e.message : String(e)}`, `Error: ${e instanceof Error ? e.message : String(e)}`); }
       push(sessionId, 'result', result, action);
-      if (i === MAX_STEPS - 1) push(sessionId, 'error', tx(lang(), '已达到最大步数，自动停止。', 'Max steps reached — stopped.'));
+      if (i === maxSteps - 1) push(sessionId, 'error', tx(lang(), `已达到最大步数（${maxSteps}），自动暂停。可在智能体页调高上限或点「继续执行」。`, `Reached max steps (${maxSteps}) — paused. Raise the limit on the Agent page or click Continue.`));
     }
   } finally {
     running = false;

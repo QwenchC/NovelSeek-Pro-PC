@@ -336,13 +336,33 @@ function isPrologueChapter(chapter: Chapter): boolean {
   return chapter.order_index === 0 || chapter.title.trim() === '序章' || normalizedTitle === 'prologue';
 }
 
+/** Strip a leading chapter-number prefix the stored title may already carry (e.g. "第3章 风起"
+ *  or "Chapter 3: ...") so we never produce "第N章 第N章". */
+function stripChapterNumberPrefix(title: string): string {
+  return title
+    .trim()
+    .replace(/^第\s*[0-9〇零一二三四五六七八九十百千两]+\s*[章节回][\s:：、.\-—　]*/u, '')
+    .replace(/^chapter\s+\d+[\s:：.\-—]*/i, '')
+    .trim();
+}
+
+/** Derive a short, title-like phrase from a chapter goal (for placeholder chapters whose `title`
+ *  is only a number). Takes the first clause, capped to a sensible length. */
+function shortTitleFromGoal(goal: string | undefined | null): string {
+  const first = (goal || '').trim().split(/[。！？\n,，；;.!?]/)[0].trim();
+  if (!first) return '';
+  return first.length > 28 ? `${first.slice(0, 28)}…` : first;
+}
+
 function getChapterDisplayTitle(chapter: Chapter, contentLanguage: 'zh' | 'en'): string {
   if (isPrologueChapter(chapter)) {
     return contentLanguage === 'en' ? 'Prologue' : '序章';
   }
-  return contentLanguage === 'en'
-    ? `Chapter ${chapter.order_index} ${chapter.title}`
-    : `第${chapter.order_index}章 ${chapter.title}`;
+  const cleaned = stripChapterNumberPrefix(chapter.title) || shortTitleFromGoal(chapter.outline_goal);
+  if (contentLanguage === 'en') {
+    return cleaned ? `Chapter ${chapter.order_index} ${cleaned}` : `Chapter ${chapter.order_index}`;
+  }
+  return cleaned ? `第${chapter.order_index}章 ${cleaned}` : `第${chapter.order_index}章`;
 }
 
 function ensureDataImage(image: string): string {

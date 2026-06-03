@@ -8,9 +8,10 @@ import { CultivationSystemPanel } from '@components/CultivationSystemPanel';
 import { MoreMenu, MoreMenuItem } from '@components/MoreMenu';
 import { VolumeArcPanel } from '@components/VolumeArcPanel';
 import { uiPrompt, uiConfirm } from '@components/uiDialog';
+import { CharacterConsistencyPicker, buildCharactersInfo } from '@components/CharacterConsistencyPicker';
 import { chapterStructureLabel, stripChapterHeading } from '@utils/index';
 import { useSmartBack } from '@utils/useSmartBack';
-import { buildRealmSystemContext } from '@utils/cultivation';
+import { buildRealmSystemContext, buildVolumeRealmConstraint } from '@utils/cultivation';
 import { buildGenerationGuidance, runChapterAutoUpdates } from '@utils/containerAi';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -183,6 +184,13 @@ export function LongNovelEditorPage() {
   const [isSaved, setIsSaved] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Selection-based polish (mirrors short-novel EditorPage): select text → floating button → AI revises in place.
+  const [revisionSelection, setRevisionSelection] = useState<{ start: number; end: number; text: string } | null>(null);
+  const [revisionButtonPos, setRevisionButtonPos] = useState<{ x: number; y: number } | null>(null);
+  const [isRevising, setIsRevising] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorContainerRef = useRef<HTMLDivElement | null>(null);
+
   // New chapter form
   const [showNewChapterForm, setShowNewChapterForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -242,8 +250,104 @@ export function LongNovelEditorPage() {
   const [illustrationConfigDraft, setIllustrationConfigDraft] = useState<IllustrationConfig>({
     model: 'zimage', width: 1920, height: 1080, style: '',
   });
+  // Character-consistency selection for image generation (illustration / promo dialogs).
+  const [imageCharIds, setImageCharIds] = useState<Set<string>>(new Set());
+  const toggleImageChar = (cid: string) =>
+    setImageCharIds((prev) => { const next = new Set(prev); if (next.has(cid)) next.delete(cid); else next.add(cid); return next; });
 
   const cancelRef = useRef(false);
+
+  // ── Selection-based polish (mirror of short-novel EditorPage) ──
+  /** Compute the on-screen pixel position of the caret at `position` inside a textarea (mirror div trick). */
+  const getCaretClientPosition = (textarea: HTMLTextAreaElement, position: number) => {
+    const div = document.createElement('div');
+    const style = window.getComputedStyle(textarea);
+    const properties = [
+      'direction', 'box-sizing', 'width', 'height', 'overflow-x', 'overflow-y',
+      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'font-style', 'font-variant', 'font-weight', 'font-stretch', 'font-size',
+      'line-height', 'font-family', 'text-align', 'text-transform', 'text-indent',
+      'text-decoration', 'letter-spacing', 'word-spacing', 'tab-size', '-moz-tab-size',
+    ];
+    properties.forEach((prop) => {
+      const value = style.getPropertyValue(prop);
+      if (value) div.style.setProperty(prop, value);
+    });
+    div.style.position = 'absolute';
+    div.style.visibility = 'hidden';
+    div.style.whiteSpace = 'pre-wrap';
+    div.style.wordWrap = 'break-word';
+    div.style.top = '0';
+    div.style.left = '-9999px';
+    div.textContent = textarea.value.substring(0, position);
+    const span = document.createElement('span');
+    span.textContent = textarea.value.substring(position) || '.';
+    div.appendChild(span);
+    document.body.appendChild(div);
+    const rect = span.getBoundingClientRect();
+    const divRect = div.getBoundingClientRect();
+    const top = rect.top - divRect.top;
+    const left = rect.left - divRect.left;
+    document.body.removeChild(div);
+    const textareaRect = textarea.getBoundingClientRect();
+    return {
+      left: textareaRect.left + left - textarea.scrollLeft,
+      top: textareaRect.top + top - textarea.scrollTop,
+      height: rect.height || parseFloat(style.lineHeight) || 16,
+    };
+  };
+
+  const updateRevisionSelection = () => {
+    const textarea = textareaRef.current;
+    const container = editorContainerRef.current;
+    if (!textarea || !container) return;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    if (start === end) { setRevisionSelection(null); setRevisionButtonPos(null); return; }
+    const selectedText = textarea.value.slice(start, end);
+    if (!selectedText.trim()) { setRevisionSelection(null); setRevisionButtonPos(null); return; }
+    const caret = getCaretClientPosition(textarea, end);
+    const containerRect = container.getBoundingClientRect();
+    const x = Math.min(Math.max(caret.left - containerRect.left, 8), containerRect.width - 40);
+    const y = Math.min(Math.max(caret.top - containerRect.top - 36, 8), containerRect.height - 40);
+    setRevisionSelection({ start, end, text: selectedText });
+    setRevisionButtonPos({ x, y });
+  };
+
+  const handlePolishSelection = async () => {
+    if (!revisionSelection) return;
+    if (!hasValidTextConfig) {
+      setError(tx(uiLanguage, '请先在设置页面配置文本模型 API 密钥', 'Configure text model API key in Settings first'));
+      return;
+    }
+    setIsRevising(true);
+    const { start, end, text } = revisionSelection;
+    try {
+      const revised = await invoke<string>('generate_revision', {
+        input: {
+          text,
+          goals: tx(uiLanguage, '润色并保持原意，使表达更自然流畅', 'Polish while preserving the meaning; make it read more naturally'),
+          text_config: textModelConfig,
+        },
+      });
+      setContent((prev) => prev.slice(0, start) + revised + prev.slice(end));
+      setIsSaved(false);
+      setRevisionSelection(null);
+      setRevisionButtonPos(null);
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return;
+        const nextPos = start + revised.length;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(nextPos, nextPos);
+      });
+    } catch (err) {
+      const message = typeof err === 'string' ? err : (err as Error)?.message || tx(uiLanguage, '润色失败', 'Polish failed');
+      setError(message);
+    } finally {
+      setIsRevising(false);
+    }
+  };
 
   const arcs = id ? getPlotArcs(id) : [];
   const volumes = id ? getVolumes(id) : [];
@@ -584,9 +688,20 @@ export function LongNovelEditorPage() {
     // Soft guidance from containers flagged "affects chapter generation" + latest character growth.
     const containerGuidance = buildGenerationGuidance(id, 'chapter', uiLanguage);
 
+    // Per-volume realm ceiling (hard limit) for THIS chapter's owning volume — prevents over-leveling /
+    // skips / drops across the volume. Goes right after the realm ladder so it reads as the binding rule.
+    const genArc = chapter.arc_id
+      ? sortedArcs.find((a) => a.id === chapter.arc_id)
+      : sortedArcs.find((a) => (a.builtChapterIds || []).includes(chapter.id));
+    const genVol = genArc?.volumeId ? volumes.find((v) => v.id === genArc.volumeId) : undefined;
+    const volRealmConstraint = genVol
+      ? buildVolumeRealmConstraint(genVol.realmPlan, genVol.name, uiLanguage, 'generate')
+      : '';
+
     const worldParts: string[] = [];
     if (arcContext) worldParts.push(arcContext);
     if (realmContext) worldParts.push(realmContext);
+    if (volRealmConstraint) worldParts.push(volRealmConstraint);
     if (containerGuidance) worldParts.push(containerGuidance);
     if (worldSetting) worldParts.push(worldSetting);
     const combinedWorldSetting = worldParts.length > 0 ? worldParts.join('\n\n') : undefined;
@@ -747,6 +862,7 @@ export function LongNovelEditorPage() {
     const outlineText = id ? getLongNovelOutline(id).slice(0, 2000) : '';
     const containerGuidance = id ? buildGenerationGuidance(id, 'chapter', uiLanguage) : '';
     let volArcBlock = '';
+    let volRealmConstraint = '';
     if (id && targetArc) {
       const vol = targetArc.volumeId ? getVolumes(id).find((v) => v.id === targetArc.volumeId) : undefined;
       volArcBlock = [
@@ -755,6 +871,7 @@ export function LongNovelEditorPage() {
         targetArc.summary && tx(uiLanguage, `弧线概述：${targetArc.summary}`, `Arc summary: ${targetArc.summary}`),
         targetArc.miniOutline && tx(uiLanguage, `弧线细纲：\n${targetArc.miniOutline.slice(0, 800)}`, `Arc mini-outline:\n${targetArc.miniOutline.slice(0, 800)}`),
       ].filter(Boolean).join('\n');
+      if (vol) volRealmConstraint = buildVolumeRealmConstraint(vol.realmPlan, vol.name, uiLanguage, 'plan');
     }
     // Local knowledge base (embedding index) retrieval when configured.
     let kbContext = '';
@@ -774,6 +891,7 @@ export function LongNovelEditorPage() {
       volArcBlock,
       rawArcContext,
       realmCtxForFill,
+      volRealmConstraint,
       containerGuidance,
       kbContext && tx(uiLanguage, `【相关记忆 / 知识库检索】\n${kbContext}`, `[Retrieved memory / knowledge base]\n${kbContext}`),
     ].filter((x) => x && x.trim()).join('\n\n');
@@ -832,9 +950,14 @@ export function LongNovelEditorPage() {
       allChapters,
       { uiLanguage }
     );
-    const projectOutline = realmCtxForArcOutline
-      ? `${rawProjectOutline}\n\n${realmCtxForArcOutline}`.trim()
-      : rawProjectOutline;
+    // This arc's owning volume realm ceiling — the mini-outline sets the breakthrough pacing for the whole
+    // arc, so the hard limit must be present here or the per-chapter goals will already drift.
+    const arcVol = activeArc.volumeId ? getVolumes(id).find((v) => v.id === activeArc.volumeId) : undefined;
+    const arcVolRealmConstraint = arcVol
+      ? buildVolumeRealmConstraint(arcVol.realmPlan, arcVol.name, uiLanguage, 'plan')
+      : '';
+    const projectOutline = [rawProjectOutline, realmCtxForArcOutline, arcVolRealmConstraint]
+      .filter((x) => x && x.trim()).join('\n\n');
     const maxExistingOrder = allChapters.length > 0
       ? Math.max(...allChapters.map((c) => c.order_index))
       : 0;
@@ -925,6 +1048,7 @@ export function LongNovelEditorPage() {
       return;
     }
     setPromoError(null);
+    setImageCharIds(new Set());
     setShowPromoConfig(true);
   };
 
@@ -948,8 +1072,12 @@ export function LongNovelEditorPage() {
         outputLanguage: 'zh',
         textConfig: textModelConfig,
       });
+      const charactersInfo = id ? buildCharactersInfo(getCharacters(id), imageCharIds) : null;
+      const promoImagePrompt = charactersInfo
+        ? `${promoData.image_prompt}\n\n[Characters in frame — keep their look consistent]\n${charactersInfo}`
+        : promoData.image_prompt;
       const imageBase64 = await invoke<string>('generate_promo_image', {
-        prompt: promoData.image_prompt,
+        prompt: promoImagePrompt,
         width: 1200,
         height: 400,
         pollinationsKey: pollinationsKey || null,
@@ -1027,6 +1155,7 @@ export function LongNovelEditorPage() {
     }
     setIllustrationError(null);
     setIllustrationConfigDraft({ ...illustrationConfig });
+    setImageCharIds(new Set());
     setShowIllustrationConfig(true);
   };
 
@@ -1037,8 +1166,13 @@ export function LongNovelEditorPage() {
     try {
       const selectedText = selectedIndices.map((index) => paragraphs[index - 1]).filter(Boolean).join('\n\n');
       const anchorIndex = selectedIndices[0];
+      // Character consistency: feed the picked characters' appearance to the prompt builder.
+      const charactersInfo = id ? buildCharactersInfo(getCharacters(id), imageCharIds) : null;
+      const promptText = charactersInfo
+        ? `${selectedText}\n\n【画面中出现的角色，请严格按以下外貌刻画以保持一致】\n${charactersInfo}`
+        : selectedText;
       const prompt = await invoke<string>('generate_illustration_prompt', {
-        text: selectedText,
+        text: promptText,
         style: config.style?.trim() || null,
         textConfig: textModelConfig,
       });
@@ -1399,10 +1533,29 @@ export function LongNovelEditorPage() {
             )}
 
             {/* Text area */}
-            <div className="flex-1 relative overflow-hidden">
+            <div ref={editorContainerRef} className="flex-1 relative overflow-hidden">
+              {revisionSelection && revisionButtonPos && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handlePolishSelection}
+                  disabled={isRevising}
+                  className="absolute z-10 w-8 h-8 rounded-full bg-purple-600 hover:bg-purple-700 text-white flex items-center justify-center shadow-md"
+                  style={{ left: revisionButtonPos.x, top: revisionButtonPos.y }}
+                  title={tx(uiLanguage, '润色选中内容', 'Polish selected text')}
+                >
+                  {isRevising ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                </button>
+              )}
               <textarea
+                ref={textareaRef}
                 value={content}
-                onChange={(e) => { setContent(e.target.value); setIsSaved(false); }}
+                onChange={(e) => { setContent(e.target.value); setIsSaved(false); setRevisionSelection(null); setRevisionButtonPos(null); }}
+                onMouseUp={updateRevisionSelection}
+                onKeyUp={updateRevisionSelection}
+                onSelect={updateRevisionSelection}
+                onScroll={() => { if (revisionSelection) updateRevisionSelection(); }}
+                onBlur={() => { setRevisionSelection(null); setRevisionButtonPos(null); }}
                 className="w-full h-full px-6 py-5 text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-900 resize-none focus:outline-none text-base leading-relaxed font-serif"
                 placeholder={tx(
                   uiLanguage,
@@ -1876,6 +2029,7 @@ export function LongNovelEditorPage() {
               </datalist>
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">{tx(uiLanguage, '支持中文输入，系统会将风格整合为英文提示词', 'Non-English style is auto-converted to English prompts')}</p>
+            {id && <CharacterConsistencyPicker characters={getCharacters(id)} selectedIds={imageCharIds} onToggle={toggleImageChar} uiLanguage={uiLanguage} />}
           </div>
           <div className="flex gap-3 mt-6">
             <Button variant="outline" onClick={() => setShowPromoConfig(false)} className="flex-1">{tx(uiLanguage, '取消', 'Cancel')}</Button>
@@ -1915,6 +2069,7 @@ export function LongNovelEditorPage() {
               </datalist>
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">{tx(uiLanguage, '建议 16:9 或 3:2 比例更适合插图展示', '16:9 or 3:2 aspect ratio works best')}</p>
+            {id && <CharacterConsistencyPicker characters={getCharacters(id)} selectedIds={imageCharIds} onToggle={toggleImageChar} uiLanguage={uiLanguage} />}
           </div>
           <div className="flex gap-3 mt-6">
             <Button variant="outline" onClick={() => setShowIllustrationConfig(false)} className="flex-1">{tx(uiLanguage, '取消', 'Cancel')}</Button>

@@ -8,6 +8,7 @@ import { CultivationSystemPanel } from '@components/CultivationSystemPanel';
 import { MoreMenu, MoreMenuItem } from '@components/MoreMenu';
 import { VolumeArcPanel } from '@components/VolumeArcPanel';
 import { uiPrompt } from '@components/uiDialog';
+import { CharacterConsistencyPicker, buildCharactersInfo } from '@components/CharacterConsistencyPicker';
 import { useSmartBack } from '@utils/useSmartBack';
 import {
   ArrowLeft, BookOpen, Library, Users, FileText, Plus, Edit2,
@@ -60,7 +61,7 @@ export function LongNovelPage() {
     uiLanguage,
     currentProject, setCurrentProject,
     chapters, setChapters,
-    getPlotArcs, getVolumes, ensureVolumes,
+    getPlotArcs, getVolumes, ensureVolumes, getCharacters,
     cleanupRealmEventsForChapter,
     textModelConfig, pollinationsKey, imageEngine, comfyUIUrl,
   } = useAppStore();
@@ -81,6 +82,10 @@ export function LongNovelPage() {
   const [coverGenerating, setCoverGenerating] = useState(false);
   const [coverError, setCoverError] = useState<string | null>(null);
   const [coverConfig, setCoverConfig] = useState({ model: 'zimage', style: '', width: 1080, height: 1920 });
+  // Character-consistency selection for cover generation.
+  const [coverCharIds, setCoverCharIds] = useState<Set<string>>(new Set());
+  const toggleCoverChar = (cid: string) =>
+    setCoverCharIds((prev) => { const next = new Set(prev); if (next.has(cid)) next.delete(cid); else next.add(cid); return next; });
 
   // ── Chapter reorder (sort toggle + long-press drag) ──────────────
   const [reorderMode, setReorderMode] = useState(false);
@@ -161,7 +166,11 @@ export function LongNovelPage() {
       const baseText = lang === 'en'
         ? `Title: ${currentProject.title}\nGenre: ${currentProject.genre || 'Uncategorized'}\nOutline: ${currentProject.description || 'No outline'}`
         : `书名: ${currentProject.title}\n题材: ${currentProject.genre || '未分类'}\n简介: ${currentProject.description || '暂无简介'}`;
-      const coverText = lang === 'en' ? `Cover design reference:\n${baseText}` : `封面设计：参考以下简介。\n${baseText}`;
+      const baseCoverText = lang === 'en' ? `Cover design reference:\n${baseText}` : `封面设计：参考以下简介。\n${baseText}`;
+      const charactersInfo = id ? buildCharactersInfo(getCharacters(id), coverCharIds) : null;
+      const coverText = charactersInfo
+        ? `${baseCoverText}\n\n${lang === 'en' ? '[Characters on the cover — keep their look consistent]' : '【封面中出现的角色，请严格按以下外貌刻画以保持一致】'}\n${charactersInfo}`
+        : baseCoverText;
       const prompt = await invoke<string>('generate_illustration_prompt', { text: coverText, style: coverConfig.style?.trim() || null, textConfig: textModelConfig });
       const imageBase64 = await invoke<string>('generate_promo_image', { prompt, width: coverConfig.width, height: coverConfig.height, model: coverConfig.model, pollinationsKey: pollinationsKey || null, engine: imageEngine, comfyuiUrl: comfyUIUrl || null });
       const newCover: CoverImageItem = { id: createCoverId(), name: `${tx(uiLanguage, '封面', 'Cover')} ${coverImages.length + 1}`, imageBase64, prompt, createdAt: new Date().toISOString(), config: { model: coverConfig.model, style: coverConfig.style, width: coverConfig.width, height: coverConfig.height } };
@@ -640,6 +649,12 @@ export function LongNovelPage() {
                 <input type="number" value={coverConfig.height} onChange={(e) => setCoverConfig((p) => ({ ...p, height: parseInt(e.target.value, 10) || p.height }))} className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 text-sm" min={64} />
               </div>
             </div>
+
+            {id && (
+              <div className="mt-3">
+                <CharacterConsistencyPicker characters={getCharacters(id)} selectedIds={coverCharIds} onToggle={toggleCoverChar} uiLanguage={uiLanguage} />
+              </div>
+            )}
 
             <div className="flex gap-3 mt-6">
               <Button variant="outline" onClick={() => setShowCoverModal(false)} className="flex-1">{tx(uiLanguage, '关闭', 'Close')}</Button>
